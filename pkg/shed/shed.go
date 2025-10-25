@@ -179,7 +179,7 @@ func (p *PartData) Len() int {
 }
 
 // Less implements sort.Interface.
-func (p *PartData) Less(i int, j int) bool {
+func (p *PartData) Less(i, j int) bool {
 	for _, sortDef := range p.def.Order {
 
 		if cmped := cmp(p.rows[sortDef.Name][i], p.rows[sortDef.Name][j]); cmped != 0 {
@@ -187,6 +187,24 @@ func (p *PartData) Less(i int, j int) bool {
 		}
 	}
 	return false
+}
+
+func (t *Table) IndexCmp(a, b []interface{}) int {
+	for i, sortDef := range t.Order {
+		if a == nil && b == nil {
+			return 0
+		}
+		if a == nil {
+			return -1
+		}
+		if b == nil {
+			return 1
+		}
+		if cmped := cmp(a[i], b[i]); cmped != 0 {
+			return int(sortDef.Order) * cmped
+		}
+	}
+	return 0
 }
 
 // Swap implements sort.Interface.
@@ -330,6 +348,64 @@ func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l
 				return
 			}
 		}
+	}
+}
+
+func (part *Part) ScanColumnRange(ctx context.Context, column string, min, max []interface{}) iter.Seq2[any, error] {
+	return func(yield func(any, error) bool) {
+		index, err := part.LoadIndex(ctx)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+
+		offsetIdx, err := part.IndexLeq(ctx, min)
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+
+		offset := index.Offsets[column][offsetIdx]
+
+		f, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, -1, nil)
+		defer f.Close()
+		if err != nil {
+			yield(nil, err)
+			return
+		}
+		// TODO - initialize column scanners for index rows and scan those + filter for rows
+		for r, e := range part.table.d.encoder.Read(ctx, f, func() interface{} { return nil }) {
+			if !yield(r, e) {
+				return
+			}
+		}
+	}
+}
+
+func (part *Part) IndexLeq(ctx context.Context, min []interface{}) (int, error) {
+	idx, err := part.LoadIndex(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("index leq: %w", err)
+	}
+	i := part.table.binarySearch(idx, min, 0, len(idx.Keys)-1)
+	return i, nil
+}
+
+func (t *Table) binarySearch(partIndex *PartIndex, min []interface{}, low, high int) int {
+	if high <= low {
+		if t.IndexCmp(partIndex.Keys[low], min) <= 0 {
+			return low
+		}
+		return -1
+	}
+
+	mid := (low + high) / 2
+	if c := t.IndexCmp(partIndex.Keys[mid], min); c < 0 {
+		return t.binarySearch(partIndex, min, mid+1, high)
+	} else if c < 0 {
+		return t.binarySearch(partIndex, min, low, mid-1)
+	} else {
+		return t.binarySearch(partIndex, min, low, mid)
 	}
 }
 
