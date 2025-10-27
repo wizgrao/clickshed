@@ -3,6 +3,7 @@ package shed
 import (
 	"context"
 	"reflect"
+	"sync/atomic"
 	"testing"
 
 	"gocloud.dev/blob"
@@ -19,7 +20,7 @@ func TestWrite(t *testing.T) {
 	}
 	d := &Driver{
 		granuleSize: 2,
-		encoder:     JsonEncoder{},
+		encoder:     &JsonEncoder{},
 		bucket:      b,
 		prefix:      "asdf",
 	}
@@ -98,7 +99,7 @@ func TestWrite(t *testing.T) {
 			t.Fatal(err)
 		}
 		if expected := valuesExpected[ctr]; r != expected {
-			t.Error("mismatched keys, expected", expected, "got", r)
+			t.Error("mismatched values, expected", expected, "got", r)
 		}
 		ctr += 1
 	}
@@ -122,6 +123,52 @@ func TestWrite(t *testing.T) {
 
 	if !reflect.DeepEqual(index, expectedIndex) {
 		t.Errorf("mismatched index, expected %+v, got %+v", expectedIndex, index)
+	}
+
+	valuesExpected = []interface{}{
+		float64(3.0),
+		float64(4.0),
+	}
+
+	ctr = 0
+
+	enc := &JsonEncoder{}
+	d.encoder = enc // reset statistics
+	for r, err := range part.ScanColumnRange(ctx, "val", []any{"bb"}, []any{"ddd"}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if expected := valuesExpected[ctr]; r != expected {
+			t.Error("mismatched values, expected", expected, "got", r)
+		}
+		ctr += 1
+	}
+	if ctr != len(valuesExpected) {
+		t.Error("mismatched length, expected", len(valuesExpected), "got", ctr)
+	}
+	if got := atomic.LoadInt64(&enc.stats.rowsRead); got != 6 {
+		t.Error("mismatched rows read, expected", 6, "got", got)
+	}
+
+	enc.stats = IOStatistics{}
+	valuesExpected = []interface{}{
+		float64(1.0), float64(3.0),
+	}
+	ctr = 0
+	for r, err := range part.ScanColumnRange(ctx, "val", []any{"ab"}, []any{"bc"}) {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if expected := valuesExpected[ctr]; r != expected {
+			t.Error("mismatched values, expected", expected, "got", r)
+		}
+		ctr += 1
+	}
+	if ctr != len(valuesExpected) {
+		t.Error("mismatched length, expected", len(valuesExpected), "got", ctr)
+	}
+	if got := atomic.LoadInt64(&enc.stats.rowsRead); got != 8 {
+		t.Error("mismatched rows read, expected", 8, "got", got)
 	}
 
 }

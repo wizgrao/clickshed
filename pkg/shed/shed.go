@@ -10,6 +10,8 @@ import (
 	"path"
 	"slices"
 	"sort"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -161,8 +163,11 @@ func cmp(a interface{}, b interface{}) int {
 }
 
 type Part struct {
-	id    string
-	table *Table
+	id          string
+	table       *Table
+	cachedIndex *PartIndex
+
+	sync.Mutex
 }
 
 type PartData struct {
@@ -215,17 +220,26 @@ func (p *PartData) Swap(i int, j int) {
 	}
 }
 
+type IOStatistics struct {
+	rowsRead     int64
+	rowsWritten  int64
+	bytesRead    int64
+	bytesWritten int64
+}
+
 type JsonEncoder struct {
 	Prefix string
 	Indent string
 	err    error
+	stats  IOStatistics
 }
 
 // Read implements Encoder.
-func (j JsonEncoder) Read(ctx context.Context, r io.Reader, factory func() any) iter.Seq2[any, error] {
+func (j *JsonEncoder) Read(ctx context.Context, r io.Reader, factory func() any) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
 		decoder := json.NewDecoder(r)
 		dat := factory()
+		lastReadBytes := decoder.InputOffset()
 		for {
 			if err := decoder.Decode(&dat); errors.Is(err, io.EOF) {
 				return
@@ -233,6 +247,12 @@ func (j JsonEncoder) Read(ctx context.Context, r io.Reader, factory func() any) 
 				yield(nil, err)
 				return
 			}
+			curBytesRead := decoder.InputOffset()
+			bytesDelta := curBytesRead - lastReadBytes
+			lastReadBytes = curBytesRead
+			atomic.AddInt64(&j.stats.rowsRead, 1)
+			atomic.AddInt64(&j.stats.bytesRead, bytesDelta)
+
 			if !yield(dat, nil) {
 				return
 			}
@@ -241,14 +261,14 @@ func (j JsonEncoder) Read(ctx context.Context, r io.Reader, factory func() any) 
 }
 
 // ReadError implements Encoder.
-func (j JsonEncoder) ReadError() error {
+func (j *JsonEncoder) ReadError() error {
 	return j.err
 }
 
-var _ Encoder = JsonEncoder{}
+var _ Encoder = &JsonEncoder{}
 
 // Encode implements Encoder.
-func (j JsonEncoder) Encode(v any) ([]byte, error) {
+func (j *JsonEncoder) Encode(v any) ([]byte, error) {
 	if len(j.Indent)+len(j.Prefix) == 0 {
 		bs, err := json.Marshal(v)
 		if err != nil {
@@ -261,6 +281,8 @@ func (j JsonEncoder) Encode(v any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	atomic.AddInt64(&j.stats.bytesWritten, int64(len(bs)+1))
+	atomic.AddInt64(&j.stats.rowsWritten, 1)
 
 	return append(bs, byte('\n')), nil
 }
@@ -351,7 +373,7 @@ func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l
 	}
 }
 
-func (part *Part) ScanColumnRange(ctx context.Context, column string, min, max []interface{}) iter.Seq2[any, error] {
+func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, maxIndex []interface{}) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
 		index, err := part.LoadIndex(ctx)
 		if err != nil {
@@ -359,22 +381,77 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, min, max [
 			return
 		}
 
-		offsetIdx, err := part.IndexLeq(ctx, min)
-		if err != nil {
-			yield(nil, err)
-			return
+		var offsetIdx int
+		if minIndex != nil {
+			offsetIdx, err = part.IndexLeq(ctx, minIndex)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if offsetIdx == -1 {
+				return
+			}
+		}
+
+		numIndices := len(part.table.Order)
+
+		var idxReaders []*blob.Reader
+		pullers := make([]func() (any, error, bool), numIndices)
+		stoppers := make([]func(), numIndices)
+		defer func() {
+			for _, idxReader := range idxReaders {
+				idxReader.Close()
+			}
+			for _, stopper := range stoppers {
+				if stopper != nil {
+					stopper()
+				}
+			}
+		}()
+
+		for i, o := range part.table.Order {
+			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o.Name), index.Offsets[o.Name][offsetIdx], -1, nil)
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			idxReaders = append(idxReaders, reader)
+			decoder := part.table.d.encoder.Read(ctx, reader, func() any { return nil })
+			pullers[i], stoppers[i] = iter.Pull2(decoder)
+
 		}
 
 		offset := index.Offsets[column][offsetIdx]
-
 		f, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, -1, nil)
-		defer f.Close()
+
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		// TODO - initialize column scanners for index rows and scan those + filter for rows
+		defer f.Close()
+
+		idxElems := make([]interface{}, len(part.table.Order))
 		for r, e := range part.table.d.encoder.Read(ctx, f, func() interface{} { return nil }) {
+			for i, f := range pullers {
+				idxElem, err, ok := f()
+				if !ok {
+					yield(nil, NoYieldError)
+					return
+				}
+				if err != nil {
+					yield(nil, fmt.Errorf("scanning range: %w", err))
+					return
+				}
+				idxElems[i] = idxElem
+			}
+
+			if minIndex != nil && part.table.IndexCmp(minIndex, idxElems) > 0 {
+				continue
+			}
+			if maxIndex != nil && part.table.IndexCmp(maxIndex, idxElems) < 0 {
+				return
+			}
+
 			if !yield(r, e) {
 				return
 			}
@@ -402,7 +479,7 @@ func (t *Table) binarySearch(partIndex *PartIndex, min []interface{}, low, high 
 	mid := (low + high) / 2
 	if c := t.IndexCmp(partIndex.Keys[mid], min); c < 0 {
 		return t.binarySearch(partIndex, min, mid+1, high)
-	} else if c < 0 {
+	} else if c > 0 {
 		return t.binarySearch(partIndex, min, low, mid-1)
 	} else {
 		return t.binarySearch(partIndex, min, low, mid)
@@ -410,6 +487,12 @@ func (t *Table) binarySearch(partIndex *PartIndex, min []interface{}, low, high 
 }
 
 func (part *Part) LoadIndex(ctx context.Context) (*PartIndex, error) {
+	part.Lock()
+	defer part.Unlock()
+
+	if part.cachedIndex != nil {
+		return part.cachedIndex, nil
+	}
 	f, err := part.table.d.bucket.NewReader(ctx, part.GetPartIndexPath(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
@@ -418,6 +501,7 @@ func (part *Part) LoadIndex(ctx context.Context) (*PartIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
+	part.cachedIndex = ret.(*PartIndex)
 	return ret.(*PartIndex), nil
 }
 
