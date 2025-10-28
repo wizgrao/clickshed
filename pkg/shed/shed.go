@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 	"gocloud.dev/blob"
+	"golang.org/x/sync/errgroup"
 )
 
 type SortOrder int
@@ -96,11 +97,6 @@ type Driver struct {
 	encoder     Encoder
 	bucket      *blob.Bucket
 	prefix      string
-	error       error
-}
-
-func (d *Driver) Error() error {
-	return d.error
 }
 
 type IndexEntry struct {
@@ -214,7 +210,6 @@ func (t *Table) IndexCmp(a, b []interface{}) int {
 
 // Swap implements sort.Interface.
 func (p *PartData) Swap(i int, j int) {
-
 	for _, elems := range p.rows {
 		elems[i], elems[j] = elems[j], elems[i]
 	}
@@ -305,6 +300,43 @@ type PartIndex struct {
 	Offsets map[string][]int64
 }
 
+func ZipIters(iters []iter.Seq2[any, error]) iter.Seq2[[]any, error] {
+	return func(yield func([]any, error) bool) {
+		pulls := make([]func() (any, error, bool), len(iters))
+		stops := make([]func(), len(iters))
+		defer func() {
+			for _, stop := range stops {
+				if stop != nil {
+					stop()
+				}
+			}
+		}()
+
+		for i, iterFunc := range iters {
+			pulls[i], stops[i] = iter.Pull2(iterFunc)
+		}
+
+		for {
+			vals := make([]any, len(iters))
+			var err error
+			var ok bool
+			for i, pull := range pulls {
+				vals[i], err, ok = pull()
+				if !ok {
+					return
+				}
+				if err != nil {
+					yield(nil, err)
+					return
+				}
+			}
+			if !yield(vals, nil) {
+				return
+			}
+		}
+	}
+}
+
 func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr error) {
 	d := part.table.d
 	sort.Sort(partData)
@@ -357,6 +389,130 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	return nil
 }
 
+func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr error) {
+
+	p = &Part{
+		id:    time.Now().UTC().Format(time.RFC3339) + uuid.New().String(),
+		table: t,
+	}
+	var colChannels []chan interface{}
+	eg, ctxGroup := errgroup.WithContext(ctx)
+	pi := &PartIndex{
+		Offsets: make(map[string][]int64),
+	}
+	var piLock sync.Mutex
+	for _, col := range t.Columns {
+		col := col
+		c := make(chan interface{})
+		colChannels = append(colChannels, c)
+		eg.Go(
+			func() error {
+				file, err := t.d.bucket.NewWriter(ctxGroup, p.GetPartColumnPath(col.Name), nil)
+				defer file.Close()
+				if err != nil {
+					return fmt.Errorf("writing part %s: %w", col.Name, err)
+				}
+				indexEntries, err := t.d.WritePartColumn(ctxGroup, file, func(yield func(interface{}) bool) {
+					for val := range c {
+						if !yield(val) {
+							return
+						}
+					}
+				})
+				if err != nil {
+					return err
+				}
+				piLock.Lock()
+				defer piLock.Unlock()
+				pi.Offsets[col.Name] = indexEntries
+				return nil
+			},
+		)
+	}
+
+	idxIterA, colItersA := a.IndexColumnsIterators(ctxGroup)
+	idxIterB, colItersB := b.IndexColumnsIterators(ctxGroup)
+
+	pullIdxIterA, stopIdxIterA := iter.Pull2(idxIterA)
+	defer stopIdxIterA()
+	pullIdxIterB, stopIdxIterB := iter.Pull2(idxIterB)
+	defer stopIdxIterB()
+
+	pullColIterA, stopColIterA := iter.Pull2(colItersA)
+	defer stopColIterA()
+	pullColIterB, stopColIterB := iter.Pull2(colItersB)
+	defer stopColIterB()
+
+	valA, errA, okA := pullIdxIterA()
+	valB, errB, okB := pullIdxIterB()
+
+	ctr := -1
+	for {
+		ctr += 1
+		if errA != nil {
+			return nil, fmt.Errorf("merging parts: %w", errA)
+		}
+		if errB != nil {
+			return nil, fmt.Errorf("merging parts: %w", errB)
+		}
+		if !okA && !okB {
+			break
+		}
+		if !okA || okB && t.IndexCmp(valA, valB) > 0 {
+			val, err, ok := pullColIterB()
+			if !ok {
+				return nil, fmt.Errorf("merging parts: %w", NoYieldError)
+			}
+			if err != nil {
+				return nil, fmt.Errorf("merging parts: %w", err)
+			}
+			for i, v := range val {
+				colChannels[i] <- v
+			}
+			if ctr%t.d.granuleSize == 0 {
+				pi.Keys = append(pi.Keys, valB)
+			}
+			valB, errB, okB = pullIdxIterB()
+			continue
+		}
+		val, err, ok := pullColIterA()
+		if !ok {
+			return nil, fmt.Errorf("merging parts: %w", NoYieldError)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("merging parts: %w", err)
+		}
+		for i, v := range val {
+			colChannels[i] <- v
+		}
+		if ctr%t.d.granuleSize == 0 {
+			pi.Keys = append(pi.Keys, valA)
+		}
+		valA, errA, okA = pullIdxIterA()
+	}
+	for _, c := range colChannels {
+		close(c)
+	}
+	if err := eg.Wait(); err != nil {
+		return nil, err
+	}
+	indexFile, err := t.d.bucket.NewWriter(ctx, p.GetPartIndexPath(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("writing part: %w", err)
+	}
+	defer func() {
+		if err := indexFile.Close(); err != nil {
+			outErr = errors.Join(err)
+		}
+	}()
+	indexSerialized, err := t.d.encoder.Encode(pi)
+	if err != nil {
+		return nil, fmt.Errorf("writing part: %w", err)
+	}
+	indexFile.Write(indexSerialized)
+	return p, nil
+}
+
 func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l int64) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
 		f, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, l, nil)
@@ -371,6 +527,20 @@ func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l
 			}
 		}
 	}
+}
+
+func (part *Part) IndexColumnsIterators(ctx context.Context) (iter.Seq2[[]any, error], iter.Seq2[[]any, error]) {
+	var idxs []iter.Seq2[any, error]
+	for _, o := range part.table.Order {
+		idxs = append(idxs, part.ScanColumn(ctx, o.Name, 0, -1))
+	}
+	var rets []iter.Seq2[any, error]
+
+	for _, col := range part.table.Columns {
+		rets = append(rets, part.ScanColumn(ctx, col.Name, 0, -1))
+	}
+
+	return ZipIters(idxs), ZipIters(rets)
 }
 
 func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, maxIndex []interface{}) iter.Seq2[any, error] {
@@ -489,7 +659,6 @@ func (t *Table) binarySearch(partIndex *PartIndex, min []interface{}, low, high 
 func (part *Part) LoadIndex(ctx context.Context) (*PartIndex, error) {
 	part.Lock()
 	defer part.Unlock()
-
 	if part.cachedIndex != nil {
 		return part.cachedIndex, nil
 	}
