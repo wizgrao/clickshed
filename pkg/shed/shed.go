@@ -76,9 +76,35 @@ func (t *Table) OpenPart(ctx context.Context, id string) *Part {
 }
 
 type Encoder interface {
-	Encode(v any) ([]byte, error)
+	Encode(v any) error
+	Flush() (int64, error)
+}
+
+type EncoderFactory func(context.Context, io.Writer) Encoder
+type DecoderFactory func(context.Context, io.Reader, func() any) iter.Seq2[any, error]
+
+type Decoder interface {
 	Read(context.Context, io.Reader, func() any) iter.Seq2[any, error]
 }
+
+type ProtobufEncoder struct {
+}
+
+// Encode implements Encoder.
+func (p *ProtobufEncoder) Encode(v any) ([]byte, error) {
+	switch v.(type) {
+	case float64:
+
+	}
+	return nil, nil
+}
+
+// Read implements Encoder.
+func (p *ProtobufEncoder) Read(context.Context, io.Reader, func() any) iter.Seq2[any, error] {
+	panic("unimplemented")
+}
+
+// var _ Encoder = &ProtobufEncoder{}
 
 var NoYieldError = errors.New("iterator terminated with no output")
 
@@ -93,10 +119,11 @@ func readOne2[T any](seq iter.Seq2[T, error]) (T, error) {
 }
 
 type Driver struct {
-	granuleSize int
-	encoder     Encoder
-	bucket      *blob.Bucket
-	prefix      string
+	granuleSize    int
+	encoderFactory EncoderFactory
+	decoderFactory DecoderFactory
+	bucket         *blob.Bucket
+	prefix         string
 }
 
 type IndexEntry struct {
@@ -112,24 +139,29 @@ func (d *Driver) WritePartColumn(ctx context.Context, w io.Writer, elements iter
 			}
 		}
 	}()
+	encoder := d.encoderFactory(ctx, w)
 	var indexEntries []int64
 	var bytesWritten int64
 	var i int64
 	for element := range elements {
 		if i%int64(d.granuleSize) == 0 {
+			bytesInFlush, err := encoder.Flush()
+			if err != nil {
+				return nil, fmt.Errorf("writing part: %w", err)
+			}
+			bytesWritten += bytesInFlush
 			indexEntries = append(indexEntries, bytesWritten)
 		}
-		encoded, err := d.encoder.Encode(element)
+		err := encoder.Encode(element)
 		if err != nil {
 			return nil, fmt.Errorf("writing part: %w", err)
 		}
 
-		bs, err := w.Write(encoded)
-		if err != nil {
-			return nil, fmt.Errorf("writing part: %w", err)
-		}
-		bytesWritten += int64(bs)
 		i++
+	}
+	_, err = encoder.Flush()
+	if err != nil {
+		return nil, fmt.Errorf("writing part: %w", err)
 	}
 	return indexEntries, nil
 }
@@ -222,15 +254,27 @@ type IOStatistics struct {
 	bytesWritten int64
 }
 
+var stats IOStatistics
+
 type JsonEncoder struct {
 	Prefix string
 	Indent string
-	err    error
-	stats  IOStatistics
+
+	err   error
+	stats IOStatistics
+	w     *ioWriterCounter
+	*json.Encoder
+}
+
+// Flush implements Encoder.
+func (j *JsonEncoder) Flush() (int64, error) {
+	ret := j.w.bytesWritten
+	j.w.bytesWritten = 0
+	return ret, nil
 }
 
 // Read implements Encoder.
-func (j *JsonEncoder) Read(ctx context.Context, r io.Reader, factory func() any) iter.Seq2[any, error] {
+func JsonDecoderFactory(ctx context.Context, r io.Reader, factory func() any) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
 		decoder := json.NewDecoder(r)
 		dat := factory()
@@ -245,8 +289,8 @@ func (j *JsonEncoder) Read(ctx context.Context, r io.Reader, factory func() any)
 			curBytesRead := decoder.InputOffset()
 			bytesDelta := curBytesRead - lastReadBytes
 			lastReadBytes = curBytesRead
-			atomic.AddInt64(&j.stats.rowsRead, 1)
-			atomic.AddInt64(&j.stats.bytesRead, bytesDelta)
+			atomic.AddInt64(&stats.rowsRead, 1)
+			atomic.AddInt64(&stats.bytesRead, bytesDelta)
 
 			if !yield(dat, nil) {
 				return
@@ -262,27 +306,25 @@ func (j *JsonEncoder) ReadError() error {
 
 var _ Encoder = &JsonEncoder{}
 
-// Encode implements Encoder.
-func (j *JsonEncoder) Encode(v any) ([]byte, error) {
-	if len(j.Indent)+len(j.Prefix) == 0 {
-		bs, err := json.Marshal(v)
-		if err != nil {
-			return nil, err
-		}
-
-		return append(bs, byte('\n')), nil
-	}
-	bs, err := json.MarshalIndent(v, j.Prefix, j.Indent)
-	if err != nil {
-		return nil, err
-	}
-	atomic.AddInt64(&j.stats.bytesWritten, int64(len(bs)+1))
-	atomic.AddInt64(&j.stats.rowsWritten, 1)
-
-	return append(bs, byte('\n')), nil
+type ioWriterCounter struct {
+	io.Writer
+	bytesWritten int64
 }
 
-var _ sort.Interface = new(PartData)
+func (i *ioWriterCounter) Write(p []byte) (n int, err error) {
+	n, err = i.Writer.Write(p)
+	i.bytesWritten += int64(n)
+	return
+}
+
+func newJsonEncoder(ctx context.Context, w io.Writer) Encoder {
+	ww := &ioWriterCounter{Writer: w}
+	e := &JsonEncoder{
+		w:       ww,
+		Encoder: json.NewEncoder(ww),
+	}
+	return e
+}
 
 func (part *Part) GetPartColumnPath(k string) string {
 	partName := part.table.d.prefix + part.id
@@ -371,10 +413,6 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 		Offsets: offsets,
 	}
 
-	indexSerialized, err := d.encoder.Encode(index)
-	if err != nil {
-		return fmt.Errorf("writing part: %w", err)
-	}
 	indexFile, err := d.bucket.NewWriter(ctx, part.GetPartIndexPath(), nil)
 	defer func() {
 		if err := indexFile.Close(); err != nil {
@@ -384,8 +422,13 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	if err != nil {
 		return fmt.Errorf("writing part: %w", err)
 	}
-	indexFile.Write(indexSerialized)
-
+	encoder := d.encoderFactory(ctx, indexFile)
+	if err := encoder.Encode(index); err != nil {
+		return fmt.Errorf("writing part: %w", err)
+	}
+	if _, err := encoder.Flush(); err != nil {
+		return fmt.Errorf("writing part: %w", err)
+	}
 	return nil
 }
 
@@ -505,11 +548,14 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 			outErr = errors.Join(err)
 		}
 	}()
-	indexSerialized, err := t.d.encoder.Encode(pi)
+	encoder := t.d.encoderFactory(ctx, indexFile)
+	err = encoder.Encode(pi)
 	if err != nil {
 		return nil, fmt.Errorf("writing part: %w", err)
 	}
-	indexFile.Write(indexSerialized)
+	if _, err := encoder.Flush(); err != nil {
+		return nil, fmt.Errorf("writing part: %w", err)
+	}
 	return p, nil
 }
 
@@ -521,7 +567,7 @@ func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l
 			yield(nil, err)
 			return
 		}
-		for r, e := range part.table.d.encoder.Read(ctx, f, func() interface{} { return nil }) {
+		for r, e := range part.table.d.decoderFactory(ctx, f, func() interface{} { return nil }) {
 			if !yield(r, e) {
 				return
 			}
@@ -586,7 +632,7 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 				return
 			}
 			idxReaders = append(idxReaders, reader)
-			decoder := part.table.d.encoder.Read(ctx, reader, func() any { return nil })
+			decoder := part.table.d.decoderFactory(ctx, reader, func() any { return nil })
 			pullers[i], stoppers[i] = iter.Pull2(decoder)
 
 		}
@@ -601,7 +647,7 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 		defer f.Close()
 
 		idxElems := make([]interface{}, len(part.table.Order))
-		for r, e := range part.table.d.encoder.Read(ctx, f, func() interface{} { return nil }) {
+		for r, e := range part.table.d.decoderFactory(ctx, f, func() interface{} { return nil }) {
 			for i, f := range pullers {
 				idxElem, err, ok := f()
 				if !ok {
@@ -666,7 +712,7 @@ func (part *Part) LoadIndex(ctx context.Context) (*PartIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
-	ret, err := readOne2(part.table.d.encoder.Read(ctx, f, func() any { return new(PartIndex) }))
+	ret, err := readOne2(part.table.d.decoderFactory(ctx, f, func() any { return new(PartIndex) }))
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}

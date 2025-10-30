@@ -1,0 +1,18 @@
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: pkg/gen
+    opt: paths=source_relative
+  - local: protoc-gen-connect-go
+    out: pkg/gen
+    opt:
+      - paths=source_relative
+      - simple
+managed:
+  enabled: true
+  override:
+    - file_option: go_package_prefix
+      value: github.com/wizgrao/clickshed/pkg/gen
+  disable:
+    - file_option: go_package
+      module: buf.build/bufbuild/protovalidate

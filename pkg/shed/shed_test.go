@@ -19,10 +19,11 @@ func TestReadWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Driver{
-		granuleSize: 2,
-		encoder:     &JsonEncoder{},
-		bucket:      b,
-		prefix:      "asdf",
+		granuleSize:    2,
+		bucket:         b,
+		prefix:         "asdf",
+		encoderFactory: newJsonEncoder,
+		decoderFactory: JsonDecoderFactory,
 	}
 	table := &Table{
 		d: d,
@@ -132,8 +133,7 @@ func TestReadWrite(t *testing.T) {
 
 	ctr = 0
 
-	enc := &JsonEncoder{}
-	d.encoder = enc // reset statistics
+	stats = IOStatistics{}
 	for r, err := range part.ScanColumnRange(ctx, "val", []any{"bb"}, []any{"ddd"}) {
 		if err != nil {
 			t.Fatal(err)
@@ -146,11 +146,11 @@ func TestReadWrite(t *testing.T) {
 	if ctr != len(valuesExpected) {
 		t.Error("mismatched length, expected", len(valuesExpected), "got", ctr)
 	}
-	if got := atomic.LoadInt64(&enc.stats.rowsRead); got != 6 {
+	if got := atomic.LoadInt64(&stats.rowsRead); got != 6 {
 		t.Error("mismatched rows read, expected", 6, "got", got)
 	}
 
-	enc.stats = IOStatistics{}
+	stats = IOStatistics{}
 	valuesExpected = []interface{}{
 		float64(1.0), float64(3.0),
 	}
@@ -167,7 +167,7 @@ func TestReadWrite(t *testing.T) {
 	if ctr != len(valuesExpected) {
 		t.Error("mismatched length, expected", len(valuesExpected), "got", ctr)
 	}
-	if got := atomic.LoadInt64(&enc.stats.rowsRead); got != 8 {
+	if got := atomic.LoadInt64(&stats.rowsRead); got != 8 {
 		t.Error("mismatched rows read, expected", 8, "got", got)
 	}
 
@@ -181,10 +181,11 @@ func TestMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Driver{
-		granuleSize: 2,
-		encoder:     &JsonEncoder{},
-		bucket:      b,
-		prefix:      "asdf",
+		granuleSize:    2,
+		encoderFactory: newJsonEncoder,
+		decoderFactory: JsonDecoderFactory,
+		bucket:         b,
+		prefix:         "asdf",
 	}
 	table := &Table{
 		d: d,

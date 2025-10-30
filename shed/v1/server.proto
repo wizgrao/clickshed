@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package shed.v1;
+
+message FloatMessage {
+  double value = 1;
+}
+
+message StringMessage {
+  double value = 1;
+}
