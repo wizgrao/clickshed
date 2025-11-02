@@ -9,3 +9,59 @@ message FloatMessage {
 message StringMessage {
   double value = 1;
 }
+
+message DatabaseValues {
+  oneof value {
+    StringValues string_values = 1;
+    FloatValues float_values = 2;
+  }
+}
+
+message StringValues {
+  repeated string values = 1;
+}
+
+message FloatValues {
+  repeated double values = 1;
+}
+
+message PartIndex  {
+  repeated DatabaseValues keys = 1;
+  map<string, Offsets> offsets = 2;
+}
+
+message Offsets {
+  repeated int64 offsets = 1;
+}
+
+enum ColType {
+  COL_TYPE_UNSPECIFIED = 0;
+  COL_TYPE_FLOAT = 1;
+  COL_TYPE_STRING = 2;
+}
+
+enum SortOrder {
+  SORT_ORDER_UNSPECIFIED = 0;
+  SORT_ORDER_ASC = 1;
+  SORT_ORDER_DESC = 2;
+}
+
+message Column {
+  ColType col_type = 1;
+  string name = 2;
+}
+
+message SortDef {
+  string name = 1;
+  SortOrder order = 2;
+}
+
+message TableDef {
+  repeated Column columns = 1;
+  repeated SortDef order = 2;
+}
+
+message PartData {
+  TableDef def = 1;
+  map<string, DatabaseValues> rows = 2;
+}

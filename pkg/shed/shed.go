@@ -1,22 +1,24 @@
 package shed
 
 import (
+	"bufio"
 	"context"
-	"encoding/json"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"iter"
 	"path"
-	"slices"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	shedpb "github.com/wizgrao/clickshed/pkg/gen/shed/v1"
 	"gocloud.dev/blob"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/protobuf/proto"
 )
 
 type SortOrder int
@@ -43,16 +45,20 @@ type Column struct {
 	Name string
 }
 
-type Table struct {
-	d       *Driver
+type TableDef struct {
 	Columns []Column
 	Order   []SortDef
 }
 
-func (t *Table) NewPartData(rows map[string][]interface{}) *PartData {
+type Table struct {
+	d *Driver
+	*shedpb.TableDef
+}
+
+func (t *Table) NewPartData(rows map[string]*shedpb.DatabaseValues) *PartData {
 	return &PartData{
-		def:  t,
-		rows: rows,
+		Def:  t.TableDef,
+		Rows: rows,
 	}
 }
 
@@ -88,20 +94,70 @@ type Decoder interface {
 }
 
 type ProtobufEncoder struct {
+	w       *ioWriterCounter
+	msgs    []proto.Message
+	col     *shedpb.DatabaseValues
+	marshal func(proto.Message) ([]byte, error)
+}
+
+func NewEncoderFactory(ctx context.Context, w io.Writer) Encoder {
+	return &ProtobufEncoder{
+		w:       &ioWriterCounter{Writer: w},
+		marshal: proto.Marshal,
+	}
+}
+
+var _ Encoder = &ProtobufEncoder{}
+
+// Flush implements Encoder.
+func (p *ProtobufEncoder) Flush() (int64, error) {
+	if p.col == nil && len(p.msgs) == 0 {
+		return 0, nil
+	}
+	begin := p.w.bytesWritten
+	p.msgs = append(p.msgs, p.col)
+	varintBuf := make([]byte, 64, 64)
+	for _, msg := range p.msgs {
+		bs, err := p.marshal(msg)
+		if err != nil {
+			return 0, err
+		}
+		size := binary.PutUvarint(varintBuf, uint64(len(bs)))
+		_, err = p.w.Write(varintBuf[0:size])
+		if err != nil {
+			return 0, err
+		}
+
+		_, err = p.w.Write(bs)
+		if err != nil {
+			return 0, err
+		}
+	}
+	p.col = nil
+	p.msgs = nil
+	return p.w.bytesWritten - begin, nil
 }
 
 // Encode implements Encoder.
-func (p *ProtobufEncoder) Encode(v any) ([]byte, error) {
-	switch v.(type) {
+func (p *ProtobufEncoder) Encode(v any) error {
+	switch vv := v.(type) {
 	case float64:
+		if p.col == nil {
+			p.col = &shedpb.DatabaseValues{Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: []float64{vv}}}}
+		} else {
+			p.col.GetFloatValues().Values = append(p.col.GetFloatValues().Values, vv)
+		}
+	case string:
+		if p.col == nil {
+			p.col = &shedpb.DatabaseValues{Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: []string{vv}}}}
+		} else {
+			p.col.GetStringValues().Values = append(p.col.GetStringValues().Values, vv)
+		}
+	case proto.Message:
+		p.msgs = append(p.msgs, vv)
 
 	}
-	return nil, nil
-}
-
-// Read implements Encoder.
-func (p *ProtobufEncoder) Read(context.Context, io.Reader, func() any) iter.Seq2[any, error] {
-	panic("unimplemented")
+	return nil
 }
 
 // var _ Encoder = &ProtobufEncoder{}
@@ -193,29 +249,48 @@ func cmp(a interface{}, b interface{}) int {
 type Part struct {
 	id          string
 	table       *Table
-	cachedIndex *PartIndex
+	cachedIndex *shedpb.PartIndex
 
 	sync.Mutex
 }
 
-type PartData struct {
-	def  *Table
-	rows map[string][]interface{}
-}
+type PartData shedpb.PartData
 
-// Len implements sort.Interface.
 func (p *PartData) Len() int {
-	for _, v := range p.rows {
-		return len(v)
+	for _, v := range p.Rows {
+		switch vv := v.Value.(type) {
+		case *shedpb.DatabaseValues_FloatValues:
+			return len(vv.FloatValues.Values)
+		case *shedpb.DatabaseValues_StringValues:
+			return len(vv.StringValues.Values)
+		}
 	}
 	return 0
 }
 
+func indexIntoDbValues(vs *shedpb.DatabaseValues, i int) any {
+	switch vv := vs.GetValue().(type) {
+	case *shedpb.DatabaseValues_FloatValues:
+		return vv.FloatValues.GetValues()[i]
+	case *shedpb.DatabaseValues_StringValues:
+		return vv.StringValues.GetValues()[i]
+	}
+	return nil
+}
+
+func indexIntoIndex(pi *shedpb.PartIndex, i int) []any {
+	var ret []any
+
+	for _, k := range pi.Keys {
+		ret = append(ret, indexIntoDbValues(k, i))
+	}
+	return ret
+}
+
 // Less implements sort.Interface.
 func (p *PartData) Less(i, j int) bool {
-	for _, sortDef := range p.def.Order {
-
-		if cmped := cmp(p.rows[sortDef.Name][i], p.rows[sortDef.Name][j]); cmped != 0 {
+	for _, sortDef := range p.Def.Order {
+		if cmped := cmp(indexIntoDbValues(p.Rows[sortDef.Name], i), indexIntoDbValues(p.Rows[sortDef.Name], j)); cmped != 0 {
 			return int(sortDef.Order)*cmped < 0
 		}
 	}
@@ -242,8 +317,15 @@ func (t *Table) IndexCmp(a, b []interface{}) int {
 
 // Swap implements sort.Interface.
 func (p *PartData) Swap(i int, j int) {
-	for _, elems := range p.rows {
-		elems[i], elems[j] = elems[j], elems[i]
+	for _, elemsContainer := range p.Rows {
+		switch elemsContainerV := elemsContainer.Value.(type) {
+		case *shedpb.DatabaseValues_FloatValues:
+			elems := elemsContainerV.FloatValues.GetValues()
+			elems[i], elems[j] = elems[j], elems[i]
+		case *shedpb.DatabaseValues_StringValues:
+			elems := elemsContainerV.StringValues.GetValues()
+			elems[i], elems[j] = elems[j], elems[i]
+		}
 	}
 }
 
@@ -256,55 +338,59 @@ type IOStatistics struct {
 
 var stats IOStatistics
 
-type JsonEncoder struct {
-	Prefix string
-	Indent string
-
-	err   error
-	stats IOStatistics
-	w     *ioWriterCounter
-	*json.Encoder
-}
-
-// Flush implements Encoder.
-func (j *JsonEncoder) Flush() (int64, error) {
-	ret := j.w.bytesWritten
-	j.w.bytesWritten = 0
-	return ret, nil
-}
-
 // Read implements Encoder.
-func JsonDecoderFactory(ctx context.Context, r io.Reader, factory func() any) iter.Seq2[any, error] {
+func ProtoDecoderFactory(ctx context.Context, r io.Reader, factory func() any) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
-		decoder := json.NewDecoder(r)
-		dat := factory()
-		lastReadBytes := decoder.InputOffset()
+		bufReader := bufio.NewReader(r)
 		for {
-			if err := decoder.Decode(&dat); errors.Is(err, io.EOF) {
+
+			bsToRead, err := binary.ReadUvarint(bufReader)
+
+			if errors.Is(err, io.EOF) {
 				return
 			} else if err != nil {
 				yield(nil, err)
 				return
 			}
-			curBytesRead := decoder.InputOffset()
-			bytesDelta := curBytesRead - lastReadBytes
-			lastReadBytes = curBytesRead
-			atomic.AddInt64(&stats.rowsRead, 1)
-			atomic.AddInt64(&stats.bytesRead, bytesDelta)
-
-			if !yield(dat, nil) {
+			buf := make([]byte, bsToRead)
+			_, err = io.ReadFull(bufReader, buf)
+			if err != nil {
+				yield(nil, err)
 				return
 			}
+			f := factory()
+			switch ff := f.(type) {
+			case proto.Message:
+				proto.Unmarshal(buf, ff)
+				atomic.AddInt64(&stats.rowsRead, 1)
+				if !yield(ff, nil) {
+					return
+				}
+			default:
+				vals := &shedpb.DatabaseValues{}
+				proto.Unmarshal(buf, vals)
+				switch col := vals.Value.(type) {
+				case *shedpb.DatabaseValues_FloatValues:
+					for _, ret := range col.FloatValues.GetValues() {
+						atomic.AddInt64(&stats.rowsRead, 1)
+						if !yield(ret, nil) {
+							return
+						}
+					}
+				case *shedpb.DatabaseValues_StringValues:
+					for _, ret := range col.StringValues.GetValues() {
+						atomic.AddInt64(&stats.rowsRead, 1)
+						if !yield(ret, nil) {
+							return
+						}
+					}
+				}
+			}
+
 		}
+
 	}
 }
-
-// ReadError implements Encoder.
-func (j *JsonEncoder) ReadError() error {
-	return j.err
-}
-
-var _ Encoder = &JsonEncoder{}
 
 type ioWriterCounter struct {
 	io.Writer
@@ -317,15 +403,6 @@ func (i *ioWriterCounter) Write(p []byte) (n int, err error) {
 	return
 }
 
-func newJsonEncoder(ctx context.Context, w io.Writer) Encoder {
-	ww := &ioWriterCounter{Writer: w}
-	e := &JsonEncoder{
-		w:       ww,
-		Encoder: json.NewEncoder(ww),
-	}
-	return e
-}
-
 func (part *Part) GetPartColumnPath(k string) string {
 	partName := part.table.d.prefix + part.id
 	return path.Join(partName, k+".jsonl")
@@ -335,11 +412,6 @@ func (part *Part) GetPartIndexPath() string {
 	d := part.table.d
 	partName := d.prefix + part.id
 	return path.Join(partName, "idx.json")
-}
-
-type PartIndex struct {
-	Keys    [][]interface{}
-	Offsets map[string][]int64
 }
 
 func ZipIters(iters []iter.Seq2[any, error]) iter.Seq2[[]any, error] {
@@ -379,39 +451,95 @@ func ZipIters(iters []iter.Seq2[any, error]) iter.Seq2[[]any, error] {
 	}
 }
 
+func lenDbVals(vals *shedpb.DatabaseValues) int {
+	return max(len(vals.GetFloatValues().GetValues()), len(vals.GetStringValues().GetValues()))
+}
+
+func AllDbVals(vals *shedpb.DatabaseValues) iter.Seq[any] {
+	return func(yield func(interface{}) bool) {
+		switch v := vals.GetValue().(type) {
+		case *shedpb.DatabaseValues_FloatValues:
+			for _, x := range v.FloatValues.GetValues() {
+				if !yield(x) {
+					return
+				}
+			}
+		case *shedpb.DatabaseValues_StringValues:
+			for _, x := range v.StringValues.GetValues() {
+				if !yield(x) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func colMap(def *shedpb.TableDef) map[string]shedpb.ColType {
+	ret := make(map[string]shedpb.ColType)
+	for _, col := range def.GetColumns() {
+		ret[col.GetName()] = col.GetColType()
+	}
+	return ret
+}
+
+func initPartIndex(def *shedpb.TableDef) *shedpb.PartIndex {
+	cm := colMap(def)
+	var keys []*shedpb.DatabaseValues
+	for _, v := range def.GetOrder() {
+		ct := cm[v.GetName()]
+		switch ct {
+		case shedpb.ColType_COL_TYPE_FLOAT:
+			keys = append(keys, &shedpb.DatabaseValues{Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{}}})
+		case shedpb.ColType_COL_TYPE_STRING:
+			keys = append(keys, &shedpb.DatabaseValues{Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{}}})
+		default:
+			panic(ct)
+		}
+	}
+	return &shedpb.PartIndex{
+		Keys:    keys,
+		Offsets: make(map[string]*shedpb.Offsets),
+	}
+}
+
 func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr error) {
 	d := part.table.d
 	sort.Sort(partData)
-	var indicesT [][]interface{}
+	var indicesT []*shedpb.DatabaseValues
+
 	def := part.table
 	for _, sortDef := range def.Order {
-		indicesT = append(indicesT, partData.rows[sortDef.Name])
+		indicesT = append(indicesT, partData.Rows[sortDef.Name])
+	}
+	index := initPartIndex(part.table.TableDef)
+	partLen := lenDbVals(indicesT[0])
+
+	for i := 0; i < partLen; i += part.table.d.granuleSize {
+		for j, col := range indicesT {
+			switch vals := col.GetValue().(type) {
+			case *shedpb.DatabaseValues_StringValues:
+				index.Keys[j].GetStringValues().Values = append(index.Keys[j].GetStringValues().Values, vals.StringValues.GetValues()[i])
+			case *shedpb.DatabaseValues_FloatValues:
+				index.Keys[j].GetFloatValues().Values = append(index.Keys[j].GetFloatValues().Values, vals.FloatValues.GetValues()[i])
+			}
+		}
 	}
 
-	indices := transpose(indicesT)
-
-	granuleIndices := make([][]interface{}, 0, len(indices)/part.table.d.granuleSize)
-	for i := 0; i < len(indices); i += part.table.d.granuleSize {
-		granuleIndices = append(granuleIndices, indices[i])
-	}
-
-	offsets := make(map[string][]int64)
-	for k, v := range partData.rows {
+	offsets := make(map[string]*shedpb.Offsets)
+	for k, v := range partData.Rows {
 		file, err := d.bucket.NewWriter(ctx, part.GetPartColumnPath(k), nil)
 		if err != nil {
 			return fmt.Errorf("writing part %s: %w", k, err)
 		}
-		indexEntries, err := d.WritePartColumn(ctx, file, slices.Values(v))
+		indexEntries, err := d.WritePartColumn(ctx, file, AllDbVals(v))
 		if err != nil {
 			return fmt.Errorf("writing part %s: %w", k, err)
 		}
-		offsets[k] = indexEntries
+		offsets[k] = &shedpb.Offsets{Offsets: indexEntries}
 
 	}
-	index := &PartIndex{
-		Keys:    granuleIndices,
-		Offsets: offsets,
-	}
+
+	index.Offsets = offsets
 
 	indexFile, err := d.bucket.NewWriter(ctx, part.GetPartIndexPath(), nil)
 	defer func() {
@@ -432,6 +560,17 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	return nil
 }
 
+func appendKeyRow(pi *shedpb.PartIndex, vals []any) {
+	for i, keyCol := range pi.Keys {
+		switch col := keyCol.Value.(type) {
+		case *shedpb.DatabaseValues_FloatValues:
+			col.FloatValues.Values = append(col.FloatValues.Values, vals[i].(float64))
+		case *shedpb.DatabaseValues_StringValues:
+			col.StringValues.Values = append(col.StringValues.Values, vals[i].(string))
+		}
+	}
+}
+
 func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr error) {
 
 	p = &Part{
@@ -440,9 +579,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 	}
 	var colChannels []chan interface{}
 	eg, ctxGroup := errgroup.WithContext(ctx)
-	pi := &PartIndex{
-		Offsets: make(map[string][]int64),
-	}
+	pi := initPartIndex(t.TableDef)
 	var piLock sync.Mutex
 	for _, col := range t.Columns {
 		col := col
@@ -467,7 +604,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 				}
 				piLock.Lock()
 				defer piLock.Unlock()
-				pi.Offsets[col.Name] = indexEntries
+				pi.Offsets[col.Name] = &shedpb.Offsets{Offsets: indexEntries}
 				return nil
 			},
 		)
@@ -513,7 +650,8 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 				colChannels[i] <- v
 			}
 			if ctr%t.d.granuleSize == 0 {
-				pi.Keys = append(pi.Keys, valB)
+				fmt.Println("")
+				appendKeyRow(pi, valB)
 			}
 			valB, errB, okB = pullIdxIterB()
 			continue
@@ -529,7 +667,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 			colChannels[i] <- v
 		}
 		if ctr%t.d.granuleSize == 0 {
-			pi.Keys = append(pi.Keys, valA)
+			appendKeyRow(pi, valA)
 		}
 		valA, errA, okA = pullIdxIterA()
 	}
@@ -626,7 +764,7 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 		}()
 
 		for i, o := range part.table.Order {
-			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o.Name), index.Offsets[o.Name][offsetIdx], -1, nil)
+			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o.Name), index.GetOffsets()[o.Name].GetOffsets()[offsetIdx], -1, nil)
 			if err != nil {
 				yield(nil, err)
 				return
@@ -637,7 +775,7 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 
 		}
 
-		offset := index.Offsets[column][offsetIdx]
+		offset := index.GetOffsets()[column].GetOffsets()[offsetIdx]
 		f, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, -1, nil)
 
 		if err != nil {
@@ -680,20 +818,23 @@ func (part *Part) IndexLeq(ctx context.Context, min []interface{}) (int, error) 
 	if err != nil {
 		return 0, fmt.Errorf("index leq: %w", err)
 	}
-	i := part.table.binarySearch(idx, min, 0, len(idx.Keys)-1)
+	i := part.table.binarySearch(idx, min, 0, lenDbVals(idx.Keys[0])-1)
 	return i, nil
 }
 
-func (t *Table) binarySearch(partIndex *PartIndex, min []interface{}, low, high int) int {
+func (t *Table) binarySearch(partIndex *shedpb.PartIndex, min []interface{}, low, high int) int {
 	if high <= low {
-		if t.IndexCmp(partIndex.Keys[low], min) <= 0 {
+		if t.IndexCmp(indexIntoIndex(partIndex, low), min) <= 0 {
 			return low
 		}
-		return -1
+		if low == 0 {
+			return -1
+		}
+		return low - 1
 	}
 
 	mid := (low + high) / 2
-	if c := t.IndexCmp(partIndex.Keys[mid], min); c < 0 {
+	if c := t.IndexCmp(indexIntoIndex(partIndex, mid), min); c < 0 {
 		return t.binarySearch(partIndex, min, mid+1, high)
 	} else if c > 0 {
 		return t.binarySearch(partIndex, min, low, mid-1)
@@ -702,7 +843,7 @@ func (t *Table) binarySearch(partIndex *PartIndex, min []interface{}, low, high 
 	}
 }
 
-func (part *Part) LoadIndex(ctx context.Context) (*PartIndex, error) {
+func (part *Part) LoadIndex(ctx context.Context) (*shedpb.PartIndex, error) {
 	part.Lock()
 	defer part.Unlock()
 	if part.cachedIndex != nil {
@@ -712,26 +853,10 @@ func (part *Part) LoadIndex(ctx context.Context) (*PartIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
-	ret, err := readOne2(part.table.d.decoderFactory(ctx, f, func() any { return new(PartIndex) }))
+	ret, err := readOne2(part.table.d.decoderFactory(ctx, f, func() any { return new(shedpb.PartIndex) }))
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
-	part.cachedIndex = ret.(*PartIndex)
-	return ret.(*PartIndex), nil
-}
-
-func transpose[T any](arr [][]T) [][]T {
-	if len(arr) == 0 {
-		return nil
-	}
-	l := len(arr[0])
-	w := len(arr)
-	ret := make([][]T, l, l)
-	for i := range ret {
-		ret[i] = make([]T, w, w)
-		for j := range w {
-			ret[i][j] = arr[j][i]
-		}
-	}
-	return ret
+	part.cachedIndex = ret.(*shedpb.PartIndex)
+	return ret.(*shedpb.PartIndex), nil
 }
