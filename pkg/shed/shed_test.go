@@ -27,12 +27,14 @@ func TestReadWrite(t *testing.T) {
 	}
 	table := &Table{
 		d: d,
-		TableDef: &shedpb.TableDef{
-			Columns: []*shedpb.Column{
-				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
-				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
+		TableState: &shedpb.TableState{
+			Def: &shedpb.TableDef{
+				Columns: []*shedpb.Column{
+					&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
+					&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
+				},
+				Order: []*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
 			},
-			Order: []*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
 		},
 	}
 
@@ -177,12 +179,13 @@ func TestMerge(t *testing.T) {
 	}
 	table := &Table{
 		d: d,
-		TableDef: &shedpb.TableDef{
+		TableState: &shedpb.TableState{Def: &shedpb.TableDef{
 			Columns: []*shedpb.Column{
 				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
 				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
 			},
 			Order: []*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+		},
 		},
 	}
 	keys1 := []string{
@@ -391,7 +394,7 @@ func TestMultiColumnIndex(t *testing.T) {
 	}
 	table := &Table{
 		d: d,
-		TableDef: &shedpb.TableDef{
+		TableState: &shedpb.TableState{Def: &shedpb.TableDef{
 			Columns: []*shedpb.Column{
 				{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
 				{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
@@ -401,6 +404,7 @@ func TestMultiColumnIndex(t *testing.T) {
 				{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
 				{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
 			},
+		},
 		},
 	}
 
@@ -482,15 +486,17 @@ func TestMergeMultiColumnIndex(t *testing.T) {
 	}
 	table := &Table{
 		d: d,
-		TableDef: &shedpb.TableDef{
-			Columns: []*shedpb.Column{
-				{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
-			},
-			Order: []*shedpb.SortDef{
-				{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-				{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+		TableState: &shedpb.TableState{
+			Def: &shedpb.TableDef{
+				Columns: []*shedpb.Column{
+					{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
+					{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
+					{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
+				},
+				Order: []*shedpb.SortDef{
+					{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+					{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+				},
 			},
 		},
 	}
@@ -618,5 +624,110 @@ func TestMergeMultiColumnIndex(t *testing.T) {
 	}
 	if got := atomic.LoadInt64(&stats.rowsRead); got != 12 {
 		t.Error("mismatched rows read, expected", 12, "got", got)
+	}
+}
+
+func TestTableScanColumnsRangeThreeParts(t *testing.T) {
+	ctx := context.Background()
+
+	b, err := blob.OpenBucket(ctx, "mem://")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Driver{
+		granuleSize:    2,
+		bucket:         b,
+		prefix:         "tbl",
+		encoderFactory: NewEncoderFactory,
+		decoderFactory: ProtoDecoderFactory,
+	}
+	table := &Table{
+		d: d,
+		TableState: &shedpb.TableState{
+			Def: &shedpb.TableDef{
+				Columns: []*shedpb.Column{
+					{Name: "key", ColType: shedpb.ColType_COL_TYPE_STRING},
+					{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
+				},
+				Order: []*shedpb.SortDef{{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+			},
+		},
+	}
+
+	// Create three parts with interleaving keys
+	keysA := []string{"d", "a", "g"}
+	valsA := []float64{4, 1, 7}
+	rowsA := map[string]*shedpb.DatabaseValues{
+		"key": {Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: keysA}}},
+		"val": {Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: valsA}}},
+	}
+	pA, err := table.CreatePart(ctx, table.NewPartData(rowsA))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keysB := []string{"e", "b", "h"}
+	valsB := []float64{5, 2, 8}
+	rowsB := map[string]*shedpb.DatabaseValues{
+		"key": {Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: keysB}}},
+		"val": {Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: valsB}}},
+	}
+	pB, err := table.CreatePart(ctx, table.NewPartData(rowsB))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	keysC := []string{"f", "c", "i"}
+	valsC := []float64{6, 3, 9}
+	rowsC := map[string]*shedpb.DatabaseValues{
+		"key": {Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: keysC}}},
+		"val": {Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: valsC}}},
+	}
+	pC, err := table.CreatePart(ctx, table.NewPartData(rowsC))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Register parts in table state
+	table.TableState.Parts = []string{pA.id, pB.id, pC.id}
+
+	// Scan across all parts and verify merged order
+	expectedKeys := []interface{}{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
+	expectedVals := []interface{}{float64(1), 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0}
+	ctr := 0
+	for rs, err := range table.ScanColumnsRange(ctx, nil, nil, "val") {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := rs[0], expectedKeys[ctr]; got != want {
+			t.Errorf("mismatched key at %d: want %v, got %v", ctr, want, got)
+		}
+		if got, want := rs[1], expectedVals[ctr]; got != want {
+			t.Errorf("mismatched val at %d: want %v, got %v", ctr, want, got)
+		}
+		ctr++
+	}
+	if ctr != len(expectedKeys) {
+		t.Errorf("mismatched total rows: want %d, got %d", len(expectedKeys), ctr)
+	}
+
+	// Also test a bounded range across parts: [c, g]
+	expectedKeys = []interface{}{"c", "d", "e", "f", "g"}
+	expectedVals = []interface{}{3.0, 4.0, 5.0, 6.0, 7.0}
+	ctr = 0
+	for rs, err := range table.ScanColumnsRange(ctx, []any{"c"}, []any{"g"}, "val") {
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := rs[0], expectedKeys[ctr]; got != want {
+			t.Errorf("range key %d: want %v, got %v", ctr, want, got)
+		}
+		if got, want := rs[1], expectedVals[ctr]; got != want {
+			t.Errorf("range val %d: want %v, got %v", ctr, want, got)
+		}
+		ctr++
+	}
+	if ctr != len(expectedKeys) {
+		t.Errorf("range rows count: want %d, got %d", len(expectedKeys), ctr)
 	}
 }

@@ -21,43 +21,14 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type SortOrder int
-
-const (
-	SortOrderAsc  SortOrder = 1
-	SortOrderDesc           = -1
-)
-
-type SortDef struct {
-	Name  string
-	Order SortOrder
-}
-
-type ColType int
-
-const (
-	FloatType ColType = iota + 1
-	StringType
-)
-
-type Column struct {
-	T    ColType
-	Name string
-}
-
-type TableDef struct {
-	Columns []Column
-	Order   []SortDef
-}
-
 type Table struct {
 	d *Driver
-	*shedpb.TableDef
+	*shedpb.TableState
 }
 
 func (t *Table) NewPartData(rows map[string]*shedpb.DatabaseValues) *PartData {
 	return &PartData{
-		Def:  t.TableDef,
+		Def:  t.Def,
 		Rows: rows,
 	}
 }
@@ -160,7 +131,7 @@ func (p *ProtobufEncoder) Encode(v any) error {
 	return nil
 }
 
-// var _ Encoder = &ProtobufEncoder{}
+var _ Encoder = &ProtobufEncoder{}
 
 var NoYieldError = errors.New("iterator terminated with no output")
 
@@ -298,7 +269,7 @@ func (p *PartData) Less(i, j int) bool {
 }
 
 func (t *Table) IndexCmp(a, b []interface{}) int {
-	for i, sortDef := range t.Order {
+	for i, sortDef := range t.Def.Order {
 		if a == nil && b == nil {
 			return 0
 		}
@@ -507,11 +478,11 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	sort.Sort(partData)
 	var indicesT []*shedpb.DatabaseValues
 
-	def := part.table
+	def := part.table.Def
 	for _, sortDef := range def.Order {
 		indicesT = append(indicesT, partData.Rows[sortDef.Name])
 	}
-	index := initPartIndex(part.table.TableDef)
+	index := initPartIndex(part.table.Def)
 	partLen := lenDbVals(indicesT[0])
 
 	for i := 0; i < partLen; i += part.table.d.granuleSize {
@@ -579,9 +550,9 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 	}
 	var colChannels []chan interface{}
 	eg, ctxGroup := errgroup.WithContext(ctx)
-	pi := initPartIndex(t.TableDef)
+	pi := initPartIndex(t.Def)
 	var piLock sync.Mutex
-	for _, col := range t.Columns {
+	for _, col := range t.Def.Columns {
 		col := col
 		c := make(chan interface{})
 		colChannels = append(colChannels, c)
@@ -715,12 +686,12 @@ func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l
 
 func (part *Part) IndexColumnsIterators(ctx context.Context) (iter.Seq2[[]any, error], iter.Seq2[[]any, error]) {
 	var idxs []iter.Seq2[any, error]
-	for _, o := range part.table.Order {
+	for _, o := range part.table.Def.Order {
 		idxs = append(idxs, part.ScanColumn(ctx, o.Name, 0, -1))
 	}
 	var rets []iter.Seq2[any, error]
 
-	for _, col := range part.table.Columns {
+	for _, col := range part.table.Def.Columns {
 		rets = append(rets, part.ScanColumn(ctx, col.Name, 0, -1))
 	}
 
@@ -729,6 +700,73 @@ func (part *Part) IndexColumnsIterators(ctx context.Context) (iter.Seq2[[]any, e
 
 func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, maxIndex []interface{}) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
+		for rs, err := range part.ScanColumnsRange(ctx, minIndex, maxIndex, column) {
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			if !yield(rs[len(part.table.Def.Order)], nil) {
+				return
+			}
+		}
+	}
+}
+
+func (table *Table) ScanColumnsRange(ctx context.Context, minIndex, maxIndex []interface{}, columns ...string) iter.Seq2[[]any, error] {
+	return func(yield func([]any, error) bool) {
+		numParts := len(table.TableState.Parts)
+		pullers := make([]func() ([]any, error, bool), numParts)
+		curVals := make([][]any, numParts)
+		stoppers := make([]func(), numParts)
+		defer func() {
+			for _, stopper := range stoppers {
+				stopper()
+			}
+		}()
+
+		for i, partId := range table.TableState.Parts {
+			part := table.OpenPart(ctx, partId)
+			scanner := part.ScanColumnsRange(ctx, minIndex, maxIndex, columns...)
+			pullers[i], stoppers[i] = iter.Pull2(scanner)
+			curVal, err, _ := pullers[i]()
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+			curVals[i] = curVal
+		}
+
+		for {
+			var minVal []any
+			var minIdx int
+			var err error
+
+			for i, curVal := range curVals {
+				if curVal == nil {
+					continue
+				}
+				if (curVal != nil && minVal == nil) || table.IndexCmp(curVal, minVal) < 0 {
+					minIdx = i
+					minVal = curVal
+					continue
+				}
+			}
+			if minVal == nil {
+				return
+			}
+
+			yield(minVal, nil)
+			curVals[minIdx], err, _ = pullers[minIdx]()
+			if err != nil {
+				yield(nil, err)
+				return
+			}
+		}
+	}
+}
+
+func (part *Part) ScanColumnsRange(ctx context.Context, minIndex, maxIndex []interface{}, columns ...string) iter.Seq2[[]any, error] {
+	return func(yield func([]any, error) bool) {
 		index, err := part.LoadIndex(ctx)
 		if err != nil {
 			yield(nil, err)
@@ -747,57 +785,37 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 			}
 		}
 
-		numIndices := len(part.table.Order)
+		numIndices := len(part.table.Def.Order)
+		numRequested := len(columns)
+		numCols := numIndices + numRequested
 
 		var idxReaders []*blob.Reader
-		pullers := make([]func() (any, error, bool), numIndices)
-		stoppers := make([]func(), numIndices)
-		defer func() {
-			for _, idxReader := range idxReaders {
-				idxReader.Close()
-			}
-			for _, stopper := range stoppers {
-				if stopper != nil {
-					stopper()
-				}
-			}
-		}()
+		decoders := make([]iter.Seq2[any, error], numCols)
 
-		for i, o := range part.table.Order {
+		for i, o := range part.table.Def.Order {
 			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o.Name), index.GetOffsets()[o.Name].GetOffsets()[offsetIdx], -1, nil)
 			if err != nil {
 				yield(nil, err)
 				return
 			}
 			idxReaders = append(idxReaders, reader)
-			decoder := part.table.d.decoderFactory(ctx, reader, func() any { return nil })
-			pullers[i], stoppers[i] = iter.Pull2(decoder)
+			decoders[i] = part.table.d.decoderFactory(ctx, reader, func() any { return nil })
 
 		}
 
-		offset := index.GetOffsets()[column].GetOffsets()[offsetIdx]
-		f, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, -1, nil)
-
-		if err != nil {
-			yield(nil, err)
-			return
-		}
-		defer f.Close()
-
-		idxElems := make([]interface{}, len(part.table.Order))
-		for r, e := range part.table.d.decoderFactory(ctx, f, func() interface{} { return nil }) {
-			for i, f := range pullers {
-				idxElem, err, ok := f()
-				if !ok {
-					yield(nil, NoYieldError)
-					return
-				}
-				if err != nil {
-					yield(nil, fmt.Errorf("scanning range: %w", err))
-					return
-				}
-				idxElems[i] = idxElem
+		for i, o := range columns {
+			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o), index.GetOffsets()[o].GetOffsets()[offsetIdx], -1, nil)
+			if err != nil {
+				yield(nil, err)
+				return
 			}
+			idxReaders = append(idxReaders, reader)
+			decoders[i+numIndices] = part.table.d.decoderFactory(ctx, reader, func() any { return nil })
+
+		}
+
+		for rs, e := range ZipIters(decoders) {
+			idxElems := rs[:numIndices]
 
 			if minIndex != nil && part.table.IndexCmp(minIndex, idxElems) > 0 {
 				continue
@@ -806,7 +824,7 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 				return
 			}
 
-			if !yield(r, e) {
+			if !yield(rs, e) {
 				return
 			}
 		}

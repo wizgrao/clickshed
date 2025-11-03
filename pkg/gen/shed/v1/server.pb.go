@@ -25,8 +25,8 @@ type ColType int32
 
 const (
 	ColType_COL_TYPE_UNSPECIFIED ColType = 0
-	ColType_COL_TYPE_FLOAT       ColType = 1 // corresponds to FloatType
-	ColType_COL_TYPE_STRING      ColType = 2 // corresponds to StringType
+	ColType_COL_TYPE_FLOAT       ColType = 1
+	ColType_COL_TYPE_STRING      ColType = 2
 )
 
 // Enum value maps for ColType.
@@ -629,18 +629,69 @@ func (x *TableDef) GetOrder() []*SortDef {
 	return nil
 }
 
-// PartData mirrors Go struct: def *TableDef, rows map[string][]interface{}
+type TableState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Def           *TableDef              `protobuf:"bytes,1,opt,name=def,proto3" json:"def,omitempty"`
+	Parts         []string               `protobuf:"bytes,2,rep,name=parts,proto3" json:"parts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TableState) Reset() {
+	*x = TableState{}
+	mi := &file_shed_v1_server_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TableState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TableState) ProtoMessage() {}
+
+func (x *TableState) ProtoReflect() protoreflect.Message {
+	mi := &file_shed_v1_server_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TableState.ProtoReflect.Descriptor instead.
+func (*TableState) Descriptor() ([]byte, []int) {
+	return file_shed_v1_server_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *TableState) GetDef() *TableDef {
+	if x != nil {
+		return x.Def
+	}
+	return nil
+}
+
+func (x *TableState) GetParts() []string {
+	if x != nil {
+		return x.Parts
+	}
+	return nil
+}
+
 type PartData struct {
 	state         protoimpl.MessageState     `protogen:"open.v1"`
 	Def           *TableDef                  `protobuf:"bytes,1,opt,name=def,proto3" json:"def,omitempty"`
-	Rows          map[string]*DatabaseValues `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"` // DatabaseValues instead of []interface{}
+	Rows          map[string]*DatabaseValues `protobuf:"bytes,2,rep,name=rows,proto3" json:"rows,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PartData) Reset() {
 	*x = PartData{}
-	mi := &file_shed_v1_server_proto_msgTypes[10]
+	mi := &file_shed_v1_server_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -652,7 +703,7 @@ func (x *PartData) String() string {
 func (*PartData) ProtoMessage() {}
 
 func (x *PartData) ProtoReflect() protoreflect.Message {
-	mi := &file_shed_v1_server_proto_msgTypes[10]
+	mi := &file_shed_v1_server_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -665,7 +716,7 @@ func (x *PartData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartData.ProtoReflect.Descriptor instead.
 func (*PartData) Descriptor() ([]byte, []int) {
-	return file_shed_v1_server_proto_rawDescGZIP(), []int{10}
+	return file_shed_v1_server_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PartData) GetDef() *TableDef {
@@ -715,7 +766,11 @@ const file_shed_v1_server_proto_rawDesc = "" +
 	"\x05order\x18\x02 \x01(\x0e2\x12.shed.v1.SortOrderR\x05order\"]\n" +
 	"\bTableDef\x12)\n" +
 	"\acolumns\x18\x01 \x03(\v2\x0f.shed.v1.ColumnR\acolumns\x12&\n" +
-	"\x05order\x18\x02 \x03(\v2\x10.shed.v1.SortDefR\x05order\"\xb2\x01\n" +
+	"\x05order\x18\x02 \x03(\v2\x10.shed.v1.SortDefR\x05order\"G\n" +
+	"\n" +
+	"TableState\x12#\n" +
+	"\x03def\x18\x01 \x01(\v2\x11.shed.v1.TableDefR\x03def\x12\x14\n" +
+	"\x05parts\x18\x02 \x03(\tR\x05parts\"\xb2\x01\n" +
 	"\bPartData\x12#\n" +
 	"\x03def\x18\x01 \x01(\v2\x11.shed.v1.TableDefR\x03def\x12/\n" +
 	"\x04rows\x18\x02 \x03(\v2\x1b.shed.v1.PartData.RowsEntryR\x04rows\x1aP\n" +
@@ -745,7 +800,7 @@ func file_shed_v1_server_proto_rawDescGZIP() []byte {
 }
 
 var file_shed_v1_server_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_shed_v1_server_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_shed_v1_server_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_shed_v1_server_proto_goTypes = []any{
 	(ColType)(0),           // 0: shed.v1.ColType
 	(SortOrder)(0),         // 1: shed.v1.SortOrder
@@ -759,28 +814,30 @@ var file_shed_v1_server_proto_goTypes = []any{
 	(*Column)(nil),         // 9: shed.v1.Column
 	(*SortDef)(nil),        // 10: shed.v1.SortDef
 	(*TableDef)(nil),       // 11: shed.v1.TableDef
-	(*PartData)(nil),       // 12: shed.v1.PartData
-	nil,                    // 13: shed.v1.PartIndex.OffsetsEntry
-	nil,                    // 14: shed.v1.PartData.RowsEntry
+	(*TableState)(nil),     // 12: shed.v1.TableState
+	(*PartData)(nil),       // 13: shed.v1.PartData
+	nil,                    // 14: shed.v1.PartIndex.OffsetsEntry
+	nil,                    // 15: shed.v1.PartData.RowsEntry
 }
 var file_shed_v1_server_proto_depIdxs = []int32{
 	5,  // 0: shed.v1.DatabaseValues.string_values:type_name -> shed.v1.StringValues
 	6,  // 1: shed.v1.DatabaseValues.float_values:type_name -> shed.v1.FloatValues
 	4,  // 2: shed.v1.PartIndex.keys:type_name -> shed.v1.DatabaseValues
-	13, // 3: shed.v1.PartIndex.offsets:type_name -> shed.v1.PartIndex.OffsetsEntry
+	14, // 3: shed.v1.PartIndex.offsets:type_name -> shed.v1.PartIndex.OffsetsEntry
 	0,  // 4: shed.v1.Column.col_type:type_name -> shed.v1.ColType
 	1,  // 5: shed.v1.SortDef.order:type_name -> shed.v1.SortOrder
 	9,  // 6: shed.v1.TableDef.columns:type_name -> shed.v1.Column
 	10, // 7: shed.v1.TableDef.order:type_name -> shed.v1.SortDef
-	11, // 8: shed.v1.PartData.def:type_name -> shed.v1.TableDef
-	14, // 9: shed.v1.PartData.rows:type_name -> shed.v1.PartData.RowsEntry
-	8,  // 10: shed.v1.PartIndex.OffsetsEntry.value:type_name -> shed.v1.Offsets
-	4,  // 11: shed.v1.PartData.RowsEntry.value:type_name -> shed.v1.DatabaseValues
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	11, // 8: shed.v1.TableState.def:type_name -> shed.v1.TableDef
+	11, // 9: shed.v1.PartData.def:type_name -> shed.v1.TableDef
+	15, // 10: shed.v1.PartData.rows:type_name -> shed.v1.PartData.RowsEntry
+	8,  // 11: shed.v1.PartIndex.OffsetsEntry.value:type_name -> shed.v1.Offsets
+	4,  // 12: shed.v1.PartData.RowsEntry.value:type_name -> shed.v1.DatabaseValues
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_shed_v1_server_proto_init() }
@@ -798,7 +855,7 @@ func file_shed_v1_server_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_shed_v1_server_proto_rawDesc), len(file_shed_v1_server_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   13,
+			NumMessages:   14,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

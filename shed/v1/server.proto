@@ -61,6 +61,11 @@ message TableDef {
   repeated SortDef order = 2;
 }
 
+message TableState {
+  TableDef def = 1;
+  repeated string parts = 2;
+}
+
 message PartData {
   TableDef def = 1;
   map<string, DatabaseValues> rows = 2;
