@@ -19,8 +19,8 @@ import (
 )
 
 type Table struct {
-	d *Database
-	*shedpb.TableState
+	d   *Database
+	Def *shedpb.TableDef
 }
 
 func (t *Table) NewPartData(rows map[string]*shedpb.DatabaseValues) *PartData {
@@ -113,7 +113,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 				if err != nil {
 					return fmt.Errorf("writing part %s: %w", col.Name, err)
 				}
-				indexEntries, err := t.d.WritePartColumn(ctxGroup, file, func(yield func(interface{}) bool) {
+				indexEntries, err := t.WritePartColumn(ctxGroup, file, func(yield func(interface{}) bool) {
 					for val := range c {
 						if !yield(val) {
 							return
@@ -169,7 +169,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 			for i, v := range val {
 				colChannels[i] <- v
 			}
-			if ctr%t.d.granuleSize == 0 {
+			if ctr%int(t.Def.GranuleSize) == 0 {
 				fmt.Println("")
 				appendKeyRow(pi, valB)
 			}
@@ -186,7 +186,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 		for i, v := range val {
 			colChannels[i] <- v
 		}
-		if ctr%t.d.granuleSize == 0 {
+		if ctr%int(t.Def.GranuleSize) == 0 {
 			appendKeyRow(pi, valA)
 		}
 		valA, errA, okA = pullIdxIterA()
@@ -220,7 +220,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 func (table *Table) GetActiveParts(ctx context.Context) ([]*Part, error) {
 	partsMap := make(map[string]*Part)
 	listIter := table.d.bucket.List(&blob.ListOptions{
-		Prefix: path.Join("index", table.TableState.GetDef().GetName()),
+		Prefix: path.Join("index", table.Def.GetName()),
 	})
 	iterBlob, err := listIter.Next(ctx)
 	for err == nil {

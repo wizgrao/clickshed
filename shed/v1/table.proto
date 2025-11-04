@@ -58,10 +58,8 @@ message TableDef {
   string name = 1;
   repeated Column columns = 2;
   repeated SortDef order = 3;
-}
-
-message TableState {
-  TableDef def = 1;
+  int32 granule_size = 4;
+  int32 max_granules_per_part = 5;
 }
 
 message PartData {

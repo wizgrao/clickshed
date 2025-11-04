@@ -13,7 +13,6 @@ import (
 )
 
 type Database struct {
-	granuleSize    int
 	encoderFactory EncoderFactory
 	decoderFactory DecoderFactory
 	bucket         *blob.Bucket
@@ -39,18 +38,15 @@ func (d *Database) CreateTable(ctx context.Context, td *shedpb.TableDef) (*Table
 	defer writer.Close()
 
 	encoder := d.encoderFactory(ctx, writer)
-	ts := &shedpb.TableState{
-		Def: td,
-	}
-	if err := encoder.Encode(ts); err != nil {
+	if err := encoder.Encode(td); err != nil {
 		return nil, fmt.Errorf("creating table: %w", err)
 	}
 	if _, err := encoder.Flush(); err != nil {
 		return nil, fmt.Errorf("creating table: %w", err)
 	}
 	return &Table{
-		d:          d,
-		TableState: ts,
+		d:   d,
+		Def: td,
 	}, nil
 }
 
@@ -61,11 +57,11 @@ func (d *Database) OpenTable(ctx context.Context, tableName string) (*Table, err
 		return nil, fmt.Errorf("open table %s: %w", tableName, err)
 	}
 	defer r.Close()
-	msg, err := readOne2(d.decoderFactory(ctx, r, func() any { return new(shedpb.TableState) }))
+	msg, err := readOne2(d.decoderFactory(ctx, r, func() any { return new(shedpb.TableDef) }))
 	if err != nil {
 		return nil, fmt.Errorf("open table %s: %w", tableName, err)
 	}
-	return &Table{d: d, TableState: msg.(*shedpb.TableState)}, nil
+	return &Table{d: d, Def: msg.(*shedpb.TableDef)}, nil
 }
 
 func (d *Database) ListTables(ctx context.Context) ([]*Table, error) {
@@ -91,7 +87,8 @@ func (d *Database) ListTables(ctx context.Context) ([]*Table, error) {
 	}
 	return tables, nil
 }
-func (d *Database) WritePartColumn(ctx context.Context, w io.Writer, elements iter.Seq[interface{}]) (offsets []int64, err error) {
+func (table *Table) WritePartColumn(ctx context.Context, w io.Writer, elements iter.Seq[interface{}]) (offsets []int64, err error) {
+	d := table.d
 	defer func() {
 		if wc, ok := w.(io.WriteCloser); ok {
 			if err2 := wc.Close(); err2 != nil {
@@ -104,7 +101,7 @@ func (d *Database) WritePartColumn(ctx context.Context, w io.Writer, elements it
 	var bytesWritten int64
 	var i int64
 	for element := range elements {
-		if i%int64(d.granuleSize) == 0 {
+		if i%int64(table.Def.GetGranuleSize()) == 0 {
 			bytesInFlush, err := encoder.Flush()
 			if err != nil {
 				return nil, fmt.Errorf("writing part: %w", err)

@@ -519,6 +519,7 @@ type TableDef struct {
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	Columns       []*Column              `protobuf:"bytes,2,rep,name=columns,proto3" json:"columns,omitempty"`
 	Order         []*SortDef             `protobuf:"bytes,3,rep,name=order,proto3" json:"order,omitempty"`
+	GranuleSize   int32                  `protobuf:"varint,4,opt,name=granule_size,json=granuleSize,proto3" json:"granule_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -572,6 +573,13 @@ func (x *TableDef) GetOrder() []*SortDef {
 		return x.Order
 	}
 	return nil
+}
+
+func (x *TableDef) GetGranuleSize() int32 {
+	if x != nil {
+		return x.GranuleSize
+	}
+	return 0
 }
 
 type TableState struct {
@@ -699,11 +707,12 @@ const file_shed_v1_table_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"G\n" +
 	"\aSortDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12(\n" +
-	"\x05order\x18\x02 \x01(\x0e2\x12.shed.v1.SortOrderR\x05order\"q\n" +
+	"\x05order\x18\x02 \x01(\x0e2\x12.shed.v1.SortOrderR\x05order\"\x94\x01\n" +
 	"\bTableDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
 	"\acolumns\x18\x02 \x03(\v2\x0f.shed.v1.ColumnR\acolumns\x12&\n" +
-	"\x05order\x18\x03 \x03(\v2\x10.shed.v1.SortDefR\x05order\"1\n" +
+	"\x05order\x18\x03 \x03(\v2\x10.shed.v1.SortDefR\x05order\x12!\n" +
+	"\fgranule_size\x18\x04 \x01(\x05R\vgranuleSize\"1\n" +
 	"\n" +
 	"TableState\x12#\n" +
 	"\x03def\x18\x01 \x01(\v2\x11.shed.v1.TableDefR\x03def\"\xb2\x01\n" +

@@ -60,11 +60,11 @@ func (p *PartData) Swap(i int, j int) {
 }
 
 func (part *Part) GetPartColumnPath(k string) string {
-	return path.Join("column", part.table.GetDef().GetName(), part.id, k+".col")
+	return path.Join("column", part.table.Def.GetName(), part.id, k+".col")
 }
 
 func (part *Part) GetPartIndexPath() string {
-	return path.Join("index", part.table.GetDef().GetName(), part.id+".idx")
+	return path.Join("index", part.table.Def.GetName(), part.id+".idx")
 }
 
 func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr error) {
@@ -79,7 +79,7 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	index := initPartIndex(part.id, part.table.Def, nil)
 	partLen := lenDbVals(indicesT[0])
 
-	for i := 0; i < partLen; i += part.table.d.granuleSize {
+	for i := 0; i < partLen; i += int(part.table.Def.GranuleSize) {
 		for j, col := range indicesT {
 			switch vals := col.GetValue().(type) {
 			case *shedpb.DatabaseValues_StringValues:
@@ -96,7 +96,7 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 		if err != nil {
 			return fmt.Errorf("writing part %s: %w", k, err)
 		}
-		indexEntries, err := d.WritePartColumn(ctx, file, AllDbVals(v))
+		indexEntries, err := part.table.WritePartColumn(ctx, file, AllDbVals(v))
 		if err != nil {
 			return fmt.Errorf("writing part %s: %w", k, err)
 		}
