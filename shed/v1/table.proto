@@ -1,14 +1,8 @@
 syntax = "proto3";
 
+import "google/protobuf/timestamp.proto";
+
 package shed.v1;
-
-message FloatMessage {
-  double value = 1;
-}
-
-message StringMessage {
-  double value = 1;
-}
 
 message DatabaseValues {
   oneof value {
@@ -26,8 +20,12 @@ message FloatValues {
 }
 
 message PartIndex  {
-  repeated DatabaseValues keys = 1;
+  string id = 1;
   map<string, Offsets> offsets = 2;
+  repeated string inherits = 3;
+  google.protobuf.Timestamp created = 4;
+  repeated DatabaseValues keys = 5;
+  
 }
 
 message Offsets {
@@ -57,13 +55,13 @@ message SortDef {
 }
 
 message TableDef {
-  repeated Column columns = 1;
-  repeated SortDef order = 2;
+  string name = 1;
+  repeated Column columns = 2;
+  repeated SortDef order = 3;
 }
 
 message TableState {
   TableDef def = 1;
-  repeated string parts = 2;
 }
 
 message PartData {

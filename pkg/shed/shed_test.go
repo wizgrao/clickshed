@@ -18,10 +18,9 @@ func TestReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Driver{
+	d := &Database{
 		granuleSize:    2,
 		bucket:         b,
-		prefix:         "asdf",
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
@@ -29,6 +28,7 @@ func TestReadWrite(t *testing.T) {
 		d: d,
 		TableState: &shedpb.TableState{
 			Def: &shedpb.TableDef{
+				Name: "ReadWriteTest",
 				Columns: []*shedpb.Column{
 					&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
 					&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
@@ -170,16 +170,16 @@ func TestMerge(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Driver{
+	d := &Database{
 		granuleSize:    2,
 		bucket:         b,
-		prefix:         "asdf",
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
 	table := &Table{
 		d: d,
 		TableState: &shedpb.TableState{Def: &shedpb.TableDef{
+			Name: "mergeTest",
 			Columns: []*shedpb.Column{
 				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
 				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
@@ -357,25 +357,6 @@ func TestMerge(t *testing.T) {
 	if got := atomic.LoadInt64(&stats.rowsRead); got != 14 {
 		t.Error("mismatched rows read, expected", 14, "got", got)
 	}
-
-	/*
-		expectedIndex := &PartIndex{
-			Keys: [][]interface{}{
-				[]interface{}{"aaa"},
-				[]interface{}{"asdf"},
-				[]interface{}{"bb"},
-				[]interface{}{"ddd"},
-				[]interface{}{"zzz"}},
-			Offsets: map[string][]int64{
-				"key": []int64{0, 12, 26, 36, 48},
-				"val": []int64{0, 6, 12, 18, 24},
-			},
-		}
-
-		if !reflect.DeepEqual(index, expectedIndex) {
-			t.Errorf("mismatched index, expected %+v, got %#v", expectedIndex, index)
-		}
-	*/
 }
 
 func TestMultiColumnIndex(t *testing.T) {
@@ -385,16 +366,16 @@ func TestMultiColumnIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Driver{
+	d := &Database{
 		granuleSize:    2,
 		bucket:         b,
-		prefix:         "asdf",
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
 	table := &Table{
 		d: d,
 		TableState: &shedpb.TableState{Def: &shedpb.TableDef{
+			Name: "MultiColumnIndexTest",
 			Columns: []*shedpb.Column{
 				{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
 				{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
@@ -477,10 +458,9 @@ func TestMergeMultiColumnIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Driver{
+	d := &Database{
 		granuleSize:    2,
 		bucket:         b,
-		prefix:         "asdf",
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
@@ -488,6 +468,7 @@ func TestMergeMultiColumnIndex(t *testing.T) {
 		d: d,
 		TableState: &shedpb.TableState{
 			Def: &shedpb.TableDef{
+				Name: "MultiColumnIndexTest",
 				Columns: []*shedpb.Column{
 					{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
 					{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
@@ -634,10 +615,9 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := &Driver{
+	d := &Database{
 		granuleSize:    2,
 		bucket:         b,
-		prefix:         "tbl",
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
@@ -645,6 +625,7 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 		d: d,
 		TableState: &shedpb.TableState{
 			Def: &shedpb.TableDef{
+				Name: "threePartScanMerge",
 				Columns: []*shedpb.Column{
 					{Name: "key", ColType: shedpb.ColType_COL_TYPE_STRING},
 					{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
@@ -661,7 +642,7 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 		"key": {Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: keysA}}},
 		"val": {Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: valsA}}},
 	}
-	pA, err := table.CreatePart(ctx, table.NewPartData(rowsA))
+	_, err = table.CreatePart(ctx, table.NewPartData(rowsA))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -672,7 +653,7 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 		"key": {Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: keysB}}},
 		"val": {Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: valsB}}},
 	}
-	pB, err := table.CreatePart(ctx, table.NewPartData(rowsB))
+	_, err = table.CreatePart(ctx, table.NewPartData(rowsB))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -683,13 +664,10 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 		"key": {Value: &shedpb.DatabaseValues_StringValues{StringValues: &shedpb.StringValues{Values: keysC}}},
 		"val": {Value: &shedpb.DatabaseValues_FloatValues{FloatValues: &shedpb.FloatValues{Values: valsC}}},
 	}
-	pC, err := table.CreatePart(ctx, table.NewPartData(rowsC))
+	_, err = table.CreatePart(ctx, table.NewPartData(rowsC))
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	// Register parts in table state
-	table.TableState.Parts = []string{pA.id, pB.id, pC.id}
 
 	// Scan across all parts and verify merged order
 	expectedKeys := []interface{}{"a", "b", "c", "d", "e", "f", "g", "h", "i"}
@@ -729,5 +707,87 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 	}
 	if ctr != len(expectedKeys) {
 		t.Errorf("range rows count: want %d, got %d", len(expectedKeys), ctr)
+	}
+}
+
+func TestOpenTable(t *testing.T) {
+	ctx := context.Background()
+	b, err := blob.OpenBucket(ctx, "mem://")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Database{
+		granuleSize:    2,
+		bucket:         b,
+		encoderFactory: NewEncoderFactory,
+		decoderFactory: ProtoDecoderFactory,
+	}
+
+	def := &shedpb.TableDef{
+		Name: "users",
+		Columns: []*shedpb.Column{
+			{Name: "id", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "age", ColType: shedpb.ColType_COL_TYPE_FLOAT},
+		},
+		Order: []*shedpb.SortDef{{Name: "id", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+	}
+	_, err = d.CreateTable(ctx, def)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tbl, err := d.OpenTable(ctx, "users")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := tbl.GetDef().GetName(), "users"; got != want {
+		t.Fatalf("name mismatch: want %s, got %s", want, got)
+	}
+	if len(tbl.GetDef().GetColumns()) != 2 {
+		t.Fatalf("columns len mismatch: want 2, got %d", len(tbl.GetDef().GetColumns()))
+	}
+}
+
+func TestListTables(t *testing.T) {
+	ctx := context.Background()
+	b, err := blob.OpenBucket(ctx, "mem://")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := &Database{
+		granuleSize:    2,
+		bucket:         b,
+		encoderFactory: NewEncoderFactory,
+		decoderFactory: ProtoDecoderFactory,
+	}
+
+	// Create out of order to verify sorted output
+	_, err = d.CreateTable(ctx, &shedpb.TableDef{
+		Name:    "zeta",
+		Columns: []*shedpb.Column{{Name: "k", ColType: shedpb.ColType_COL_TYPE_STRING}},
+		Order:   []*shedpb.SortDef{{Name: "k", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = d.CreateTable(ctx, &shedpb.TableDef{
+		Name:    "alpha",
+		Columns: []*shedpb.Column{{Name: "k", ColType: shedpb.ColType_COL_TYPE_STRING}},
+		Order:   []*shedpb.SortDef{{Name: "k", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tables, err := d.ListTables(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tables) != 2 {
+		t.Fatalf("expected 2 tables, got %d", len(tables))
+	}
+	names := []string{tables[0].GetDef().GetName(), tables[1].GetDef().GetName()}
+	if names[0] != "alpha" || names[1] != "zeta" {
+		t.Fatalf("unexpected order: %v", names)
 	}
 }

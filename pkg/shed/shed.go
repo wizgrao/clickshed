@@ -10,6 +10,7 @@ import (
 	"iter"
 	"path"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,10 +20,11 @@ import (
 	"gocloud.dev/blob"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type Table struct {
-	d *Driver
+	d *Database
 	*shedpb.TableState
 }
 
@@ -42,6 +44,7 @@ func (t *Table) CreatePart(ctx context.Context, p *PartData) (*Part, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return part, nil
 }
 
@@ -145,20 +148,90 @@ func readOne2[T any](seq iter.Seq2[T, error]) (T, error) {
 	return t, v
 }
 
-type Driver struct {
+type Database struct {
 	granuleSize    int
 	encoderFactory EncoderFactory
 	decoderFactory DecoderFactory
 	bucket         *blob.Bucket
-	prefix         string
 }
 
-type IndexEntry struct {
-	SortKey []interface{}
-	Offset  int
+var TableAlreadyExists = errors.New("table already exists")
+
+func (d *Database) CreateTable(ctx context.Context, td *shedpb.TableDef) (*Table, error) {
+	specPath := path.Join("table", td.Name, "spec")
+	exists, err := d.bucket.Exists(ctx, specPath)
+	if err != nil {
+		return nil, fmt.Errorf("creating table: %w", err)
+	}
+
+	if exists {
+		return nil, TableAlreadyExists
+	}
+
+	writer, err := d.bucket.NewWriter(ctx, specPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating table: %w", err)
+	}
+	defer writer.Close()
+
+	encoder := d.encoderFactory(ctx, writer)
+	ts := &shedpb.TableState{
+		Def: td,
+	}
+	if err := encoder.Encode(ts); err != nil {
+		return nil, fmt.Errorf("creating table: %w", err)
+	}
+	if _, err := encoder.Flush(); err != nil {
+		return nil, fmt.Errorf("creating table: %w", err)
+	}
+	return &Table{
+		d:          d,
+		TableState: ts,
+	}, nil
 }
 
-func (d *Driver) WritePartColumn(ctx context.Context, w io.Writer, elements iter.Seq[interface{}]) (offsets []int64, err error) {
+func (d *Database) ListTables(ctx context.Context) ([]*Table, error) {
+	var tables []*Table
+	iter := d.bucket.List(&blob.ListOptions{Prefix: path.Join("table")})
+	for {
+		obj, err := iter.Next(ctx)
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if path.Base(obj.Key) != "spec" {
+			continue
+		}
+		// table/<name>/spec
+		_, parent := path.Split(path.Dir(obj.Key))
+		t, err := d.OpenTable(ctx, parent)
+		if err != nil {
+			return nil, err
+		}
+		tables = append(tables, t)
+	}
+	// Sort by table name for deterministic order
+	sort.Slice(tables, func(i, j int) bool { return tables[i].GetDef().GetName() < tables[j].GetDef().GetName() })
+	return tables, nil
+}
+
+func (d *Database) OpenTable(ctx context.Context, tableName string) (*Table, error) {
+	specPath := path.Join("table", tableName, "spec")
+	r, err := d.bucket.NewReader(ctx, specPath, nil)
+	if err != nil {
+		return nil, fmt.Errorf("open table %s: %w", tableName, err)
+	}
+	defer r.Close()
+	msg, err := readOne2(d.decoderFactory(ctx, r, func() any { return new(shedpb.TableState) }))
+	if err != nil {
+		return nil, fmt.Errorf("open table %s: %w", tableName, err)
+	}
+	return &Table{d: d, TableState: msg.(*shedpb.TableState)}, nil
+}
+
+func (d *Database) WritePartColumn(ctx context.Context, w io.Writer, elements iter.Seq[interface{}]) (offsets []int64, err error) {
 	defer func() {
 		if wc, ok := w.(io.WriteCloser); ok {
 			if err2 := wc.Close(); err2 != nil {
@@ -314,9 +387,7 @@ func ProtoDecoderFactory(ctx context.Context, r io.Reader, factory func() any) i
 	return func(yield func(any, error) bool) {
 		bufReader := bufio.NewReader(r)
 		for {
-
 			bsToRead, err := binary.ReadUvarint(bufReader)
-
 			if errors.Is(err, io.EOF) {
 				return
 			} else if err != nil {
@@ -357,7 +428,6 @@ func ProtoDecoderFactory(ctx context.Context, r io.Reader, factory func() any) i
 					}
 				}
 			}
-
 		}
 
 	}
@@ -375,14 +445,11 @@ func (i *ioWriterCounter) Write(p []byte) (n int, err error) {
 }
 
 func (part *Part) GetPartColumnPath(k string) string {
-	partName := part.table.d.prefix + part.id
-	return path.Join(partName, k+".jsonl")
+	return path.Join("column", part.table.GetDef().GetName(), part.id, k+".col")
 }
 
 func (part *Part) GetPartIndexPath() string {
-	d := part.table.d
-	partName := d.prefix + part.id
-	return path.Join(partName, "idx.json")
+	return path.Join("index", part.table.GetDef().GetName(), part.id+".idx")
 }
 
 func ZipIters(iters []iter.Seq2[any, error]) iter.Seq2[[]any, error] {
@@ -453,7 +520,7 @@ func colMap(def *shedpb.TableDef) map[string]shedpb.ColType {
 	return ret
 }
 
-func initPartIndex(def *shedpb.TableDef) *shedpb.PartIndex {
+func initPartIndex(id string, def *shedpb.TableDef, inherits []string) *shedpb.PartIndex {
 	cm := colMap(def)
 	var keys []*shedpb.DatabaseValues
 	for _, v := range def.GetOrder() {
@@ -468,8 +535,11 @@ func initPartIndex(def *shedpb.TableDef) *shedpb.PartIndex {
 		}
 	}
 	return &shedpb.PartIndex{
-		Keys:    keys,
-		Offsets: make(map[string]*shedpb.Offsets),
+		Id:       id,
+		Inherits: inherits,
+		Created:  timestamppb.Now(),
+		Keys:     keys,
+		Offsets:  make(map[string]*shedpb.Offsets),
 	}
 }
 
@@ -482,7 +552,7 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	for _, sortDef := range def.Order {
 		indicesT = append(indicesT, partData.Rows[sortDef.Name])
 	}
-	index := initPartIndex(part.table.Def)
+	index := initPartIndex(part.id, part.table.Def, nil)
 	partLen := lenDbVals(indicesT[0])
 
 	for i := 0; i < partLen; i += part.table.d.granuleSize {
@@ -543,14 +613,14 @@ func appendKeyRow(pi *shedpb.PartIndex, vals []any) {
 }
 
 func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr error) {
-
 	p = &Part{
 		id:    time.Now().UTC().Format(time.RFC3339) + uuid.New().String(),
 		table: t,
 	}
 	var colChannels []chan interface{}
 	eg, ctxGroup := errgroup.WithContext(ctx)
-	pi := initPartIndex(t.Def)
+	pi := initPartIndex(p.id, t.Def, []string{a.id, b.id})
+
 	var piLock sync.Mutex
 	for _, col := range t.Def.Columns {
 		col := col
@@ -712,9 +782,51 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 	}
 }
 
+func (table *Table) GetActiveParts(ctx context.Context) ([]*Part, error) {
+	partsMap := make(map[string]*Part)
+	listIter := table.d.bucket.List(&blob.ListOptions{
+		Prefix: path.Join("index", table.TableState.GetDef().GetName()),
+	})
+	iterBlob, err := listIter.Next(ctx)
+	for err == nil {
+		_, key := path.Split(iterBlob.Key)
+		partId := strings.TrimSuffix(key, ".idx")
+		if _, ok := partsMap[partId]; !ok {
+			part := table.OpenPart(ctx, partId)
+			partsMap[partId] = part
+			idx, err := part.LoadIndex(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			for _, fnd := range idx.Inherits {
+				partsMap[fnd] = nil
+			}
+		}
+		iterBlob, err = listIter.Next(ctx)
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+
+	var ret []*Part
+	for _, part := range partsMap {
+		if part != nil {
+			ret = append(ret, part)
+		}
+	}
+	return ret, nil
+}
+
 func (table *Table) ScanColumnsRange(ctx context.Context, minIndex, maxIndex []interface{}, columns ...string) iter.Seq2[[]any, error] {
 	return func(yield func([]any, error) bool) {
-		numParts := len(table.TableState.Parts)
+		parts, err := table.GetActiveParts(ctx)
+		if err != nil {
+			yield(nil, err)
+			return
+
+		}
+		numParts := len(parts)
 		pullers := make([]func() ([]any, error, bool), numParts)
 		curVals := make([][]any, numParts)
 		stoppers := make([]func(), numParts)
@@ -724,8 +836,7 @@ func (table *Table) ScanColumnsRange(ctx context.Context, minIndex, maxIndex []i
 			}
 		}()
 
-		for i, partId := range table.TableState.Parts {
-			part := table.OpenPart(ctx, partId)
+		for i, part := range parts {
 			scanner := part.ScanColumnsRange(ctx, minIndex, maxIndex, columns...)
 			pullers[i], stoppers[i] = iter.Pull2(scanner)
 			curVal, err, _ := pullers[i]()
