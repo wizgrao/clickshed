@@ -23,6 +23,34 @@ type Table struct {
 	Def *shedpb.TableDef
 }
 
+type TableOpt func(*shedpb.TableDef)
+
+func WithGranuleSize(granuleSize int32) TableOpt {
+	return func(td *shedpb.TableDef) {
+		td.GranuleSize = granuleSize
+	}
+}
+
+func WithMaxGranulesPerPart(maxGranulesPerPart int32) TableOpt {
+	return func(td *shedpb.TableDef) {
+		td.MaxGranulesPerPart = maxGranulesPerPart
+	}
+}
+
+func NewTableDef(name string, columns []*shedpb.Column, order []*shedpb.SortDef, opts ...TableOpt) *shedpb.TableDef {
+	def := &shedpb.TableDef{
+		Name:               name,
+		Columns:            columns,
+		Order:              order,
+		MaxGranulesPerPart: 8192,
+		GranuleSize:        8192,
+	}
+	for _, opt := range opts {
+		opt(def)
+	}
+	return def
+}
+
 func (t *Table) NewPartData(rows map[string]*shedpb.DatabaseValues) *PartData {
 	return &PartData{
 		Def:  t.Def,

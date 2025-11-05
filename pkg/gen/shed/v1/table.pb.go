@@ -515,13 +515,14 @@ func (x *SortDef) GetOrder() SortOrder {
 }
 
 type TableDef struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Columns       []*Column              `protobuf:"bytes,2,rep,name=columns,proto3" json:"columns,omitempty"`
-	Order         []*SortDef             `protobuf:"bytes,3,rep,name=order,proto3" json:"order,omitempty"`
-	GranuleSize   int32                  `protobuf:"varint,4,opt,name=granule_size,json=granuleSize,proto3" json:"granule_size,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state              protoimpl.MessageState `protogen:"open.v1"`
+	Name               string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Columns            []*Column              `protobuf:"bytes,2,rep,name=columns,proto3" json:"columns,omitempty"`
+	Order              []*SortDef             `protobuf:"bytes,3,rep,name=order,proto3" json:"order,omitempty"`
+	GranuleSize        int32                  `protobuf:"varint,4,opt,name=granule_size,json=granuleSize,proto3" json:"granule_size,omitempty"`
+	MaxGranulesPerPart int32                  `protobuf:"varint,5,opt,name=max_granules_per_part,json=maxGranulesPerPart,proto3" json:"max_granules_per_part,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *TableDef) Reset() {
@@ -582,48 +583,11 @@ func (x *TableDef) GetGranuleSize() int32 {
 	return 0
 }
 
-type TableState struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Def           *TableDef              `protobuf:"bytes,1,opt,name=def,proto3" json:"def,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *TableState) Reset() {
-	*x = TableState{}
-	mi := &file_shed_v1_table_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *TableState) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*TableState) ProtoMessage() {}
-
-func (x *TableState) ProtoReflect() protoreflect.Message {
-	mi := &file_shed_v1_table_proto_msgTypes[8]
+func (x *TableDef) GetMaxGranulesPerPart() int32 {
 	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
+		return x.MaxGranulesPerPart
 	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use TableState.ProtoReflect.Descriptor instead.
-func (*TableState) Descriptor() ([]byte, []int) {
-	return file_shed_v1_table_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *TableState) GetDef() *TableDef {
-	if x != nil {
-		return x.Def
-	}
-	return nil
+	return 0
 }
 
 type PartData struct {
@@ -636,7 +600,7 @@ type PartData struct {
 
 func (x *PartData) Reset() {
 	*x = PartData{}
-	mi := &file_shed_v1_table_proto_msgTypes[9]
+	mi := &file_shed_v1_table_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -648,7 +612,7 @@ func (x *PartData) String() string {
 func (*PartData) ProtoMessage() {}
 
 func (x *PartData) ProtoReflect() protoreflect.Message {
-	mi := &file_shed_v1_table_proto_msgTypes[9]
+	mi := &file_shed_v1_table_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -661,7 +625,7 @@ func (x *PartData) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PartData.ProtoReflect.Descriptor instead.
 func (*PartData) Descriptor() ([]byte, []int) {
-	return file_shed_v1_table_proto_rawDescGZIP(), []int{9}
+	return file_shed_v1_table_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PartData) GetDef() *TableDef {
@@ -707,15 +671,13 @@ const file_shed_v1_table_proto_rawDesc = "" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"G\n" +
 	"\aSortDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12(\n" +
-	"\x05order\x18\x02 \x01(\x0e2\x12.shed.v1.SortOrderR\x05order\"\x94\x01\n" +
+	"\x05order\x18\x02 \x01(\x0e2\x12.shed.v1.SortOrderR\x05order\"\xc7\x01\n" +
 	"\bTableDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
 	"\acolumns\x18\x02 \x03(\v2\x0f.shed.v1.ColumnR\acolumns\x12&\n" +
 	"\x05order\x18\x03 \x03(\v2\x10.shed.v1.SortDefR\x05order\x12!\n" +
-	"\fgranule_size\x18\x04 \x01(\x05R\vgranuleSize\"1\n" +
-	"\n" +
-	"TableState\x12#\n" +
-	"\x03def\x18\x01 \x01(\v2\x11.shed.v1.TableDefR\x03def\"\xb2\x01\n" +
+	"\fgranule_size\x18\x04 \x01(\x05R\vgranuleSize\x121\n" +
+	"\x15max_granules_per_part\x18\x05 \x01(\x05R\x12maxGranulesPerPart\"\xb2\x01\n" +
 	"\bPartData\x12#\n" +
 	"\x03def\x18\x01 \x01(\v2\x11.shed.v1.TableDefR\x03def\x12/\n" +
 	"\x04rows\x18\x02 \x03(\v2\x1b.shed.v1.PartData.RowsEntryR\x04rows\x1aP\n" +
@@ -746,7 +708,7 @@ func file_shed_v1_table_proto_rawDescGZIP() []byte {
 }
 
 var file_shed_v1_table_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_shed_v1_table_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_shed_v1_table_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_shed_v1_table_proto_goTypes = []any{
 	(ColType)(0),                  // 0: shed.v1.ColType
 	(SortOrder)(0),                // 1: shed.v1.SortOrder
@@ -758,32 +720,30 @@ var file_shed_v1_table_proto_goTypes = []any{
 	(*Column)(nil),                // 7: shed.v1.Column
 	(*SortDef)(nil),               // 8: shed.v1.SortDef
 	(*TableDef)(nil),              // 9: shed.v1.TableDef
-	(*TableState)(nil),            // 10: shed.v1.TableState
-	(*PartData)(nil),              // 11: shed.v1.PartData
-	nil,                           // 12: shed.v1.PartIndex.OffsetsEntry
-	nil,                           // 13: shed.v1.PartData.RowsEntry
-	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(*PartData)(nil),              // 10: shed.v1.PartData
+	nil,                           // 11: shed.v1.PartIndex.OffsetsEntry
+	nil,                           // 12: shed.v1.PartData.RowsEntry
+	(*timestamppb.Timestamp)(nil), // 13: google.protobuf.Timestamp
 }
 var file_shed_v1_table_proto_depIdxs = []int32{
 	3,  // 0: shed.v1.DatabaseValues.string_values:type_name -> shed.v1.StringValues
 	4,  // 1: shed.v1.DatabaseValues.float_values:type_name -> shed.v1.FloatValues
-	12, // 2: shed.v1.PartIndex.offsets:type_name -> shed.v1.PartIndex.OffsetsEntry
-	14, // 3: shed.v1.PartIndex.created:type_name -> google.protobuf.Timestamp
+	11, // 2: shed.v1.PartIndex.offsets:type_name -> shed.v1.PartIndex.OffsetsEntry
+	13, // 3: shed.v1.PartIndex.created:type_name -> google.protobuf.Timestamp
 	2,  // 4: shed.v1.PartIndex.keys:type_name -> shed.v1.DatabaseValues
 	0,  // 5: shed.v1.Column.col_type:type_name -> shed.v1.ColType
 	1,  // 6: shed.v1.SortDef.order:type_name -> shed.v1.SortOrder
 	7,  // 7: shed.v1.TableDef.columns:type_name -> shed.v1.Column
 	8,  // 8: shed.v1.TableDef.order:type_name -> shed.v1.SortDef
-	9,  // 9: shed.v1.TableState.def:type_name -> shed.v1.TableDef
-	9,  // 10: shed.v1.PartData.def:type_name -> shed.v1.TableDef
-	13, // 11: shed.v1.PartData.rows:type_name -> shed.v1.PartData.RowsEntry
-	6,  // 12: shed.v1.PartIndex.OffsetsEntry.value:type_name -> shed.v1.Offsets
-	2,  // 13: shed.v1.PartData.RowsEntry.value:type_name -> shed.v1.DatabaseValues
-	14, // [14:14] is the sub-list for method output_type
-	14, // [14:14] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	9,  // 9: shed.v1.PartData.def:type_name -> shed.v1.TableDef
+	12, // 10: shed.v1.PartData.rows:type_name -> shed.v1.PartData.RowsEntry
+	6,  // 11: shed.v1.PartIndex.OffsetsEntry.value:type_name -> shed.v1.Offsets
+	2,  // 12: shed.v1.PartData.RowsEntry.value:type_name -> shed.v1.DatabaseValues
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_shed_v1_table_proto_init() }
@@ -801,7 +761,7 @@ func file_shed_v1_table_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_shed_v1_table_proto_rawDesc), len(file_shed_v1_table_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   12,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
