@@ -7,6 +7,7 @@ import (
 	"io"
 	"iter"
 	"path"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,46 @@ func (t *Table) NewPartData(rows map[string]*shedpb.DatabaseValues) *PartData {
 		Def:  t.Def,
 		Rows: rows,
 	}
+}
+
+func (t *Table) TryMergeParts(ctx context.Context) (bool, error) {
+	parts, err := t.GetActiveParts(ctx)
+	if err != nil {
+		return false, fmt.Errorf("try merge parts: %w", err)
+	}
+
+	if len(parts) < 2 {
+		return false, nil
+	}
+
+	slices.SortFunc(parts, func(a, b *Part) int {
+		a.Lock()
+		aI := a.cachedIndex
+		a.Unlock()
+		b.Lock()
+		bI := b.cachedIndex
+		b.Unlock()
+		return lenDbVals(aI.Keys[0]) - lenDbVals(bI.Keys[0])
+	})
+
+	a := parts[0]
+	b := parts[1]
+	a.Lock()
+	aI := a.cachedIndex
+	a.Unlock()
+	b.Lock()
+	bI := b.cachedIndex
+	b.Unlock()
+
+	if lenDbVals(aI.Keys[0])+lenDbVals(bI.Keys[1]) > int(t.Def.GetMaxGranulesPerPart()) {
+		return false, nil
+	}
+
+	_, err = t.MergeParts(ctx, a, b)
+	if err != nil {
+		return false, fmt.Errorf("try merge parts: %w", err)
+	}
+	return true, nil
 }
 
 func (t *Table) CreatePart(ctx context.Context, p *PartData) (*Part, error) {
