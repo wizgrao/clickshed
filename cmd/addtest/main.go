@@ -22,7 +22,7 @@ func main() {
 		DecoderFactory: shed.ProtoDecoderFactory,
 	}
 	tbl, err := db.OpenTable(ctx, "testPlusOne")
-	partSize := 100000
+	partSize := 1000000
 	for j := range 100 {
 		var strKeys []string
 		var valFloats []float64
@@ -47,7 +47,9 @@ func main() {
 				},
 			},
 		}
+		fmt.Println("inserting", j)
 		_, err := tbl.CreatePart(ctx, tbl.NewPartData(map[string]*shedv1.DatabaseValues{"key": ks, "val": vals}))
+		fmt.Println("inserted", j)
 		if err != nil {
 			panic(err)
 		}

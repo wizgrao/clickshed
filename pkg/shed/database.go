@@ -27,9 +27,6 @@ type Database struct {
 func (d *Database) CheckCache(path string) *shedpb.PartIndex {
 	d.RLock()
 	defer d.RUnlock()
-	if d.Cache == nil {
-		return nil
-	}
 	return d.Cache[path]
 }
 func (d *Database) LoadIndex(ctx context.Context, path string) (*shedpb.PartIndex, error) {
@@ -47,11 +44,11 @@ func (d *Database) LoadIndex(ctx context.Context, path string) (*shedpb.PartInde
 	}
 	retVal := ret.(*shedpb.PartIndex)
 	d.Lock()
+	defer d.Unlock()
 	if d.Cache == nil {
 		d.Cache = make(map[string]*shedpb.PartIndex)
 	}
 	d.Cache[path] = retVal
-	d.Unlock()
 	return retVal, nil
 }
 

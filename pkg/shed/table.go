@@ -308,29 +308,48 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 }
 
 func (table *Table) GetActiveParts(ctx context.Context) ([]*Part, error) {
+	eg, ctx := errgroup.WithContext(ctx)
+	var lock sync.RWMutex
 	partsMap := make(map[string]*Part)
 	listIter := table.d.Bucket.List(&blob.ListOptions{
 		Prefix: path.Join("index", table.Def.GetName()),
 	})
 	iterBlob, err := listIter.Next(ctx)
 	for err == nil {
-		_, key := path.Split(iterBlob.Key)
-		partId := strings.TrimSuffix(key, ".idx")
-		if _, ok := partsMap[partId]; !ok {
-			part := table.OpenPart(ctx, partId)
-			partsMap[partId] = part
-			idx, err := part.LoadIndex(ctx)
-			if err != nil {
-				return nil, err
-			}
+		blobKey := iterBlob.Key
+		eg.Go(func() error {
+			_, key := path.Split(blobKey)
+			partId := strings.TrimSuffix(key, ".idx")
+			lock.RLock()
+			if _, ok := partsMap[partId]; !ok {
+				lock.RUnlock()
+				part := table.OpenPart(ctx, partId)
+				lock.Lock()
+				if _, ok := partsMap[partId]; !ok {
+					partsMap[partId] = part
+				}
+				lock.Unlock()
+				idx, err := part.LoadIndex(ctx)
+				if err != nil {
+					return err
+				}
 
-			for _, fnd := range idx.Inherits {
-				partsMap[fnd] = nil
+				for _, fnd := range idx.Inherits {
+					lock.Lock()
+					partsMap[fnd] = nil
+					lock.Unlock()
+				}
+			} else {
+				lock.RUnlock()
 			}
-		}
+			return nil
+		})
 		iterBlob, err = listIter.Next(ctx)
 	}
 	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if err := eg.Wait(); err != nil {
 		return nil, err
 	}
 
