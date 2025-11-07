@@ -19,22 +19,23 @@ func newTestTable(ctx context.Context, t *testing.T, name string, granuleSize, m
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
-	return &Table{
-		d: d,
-		Def: NewTableDef(
-			name,
-			[]*shedpb.Column{
-				{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
-			},
-			[]*shedpb.SortDef{
-				{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-				{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-			},
-			WithGranuleSize(granuleSize),
-			WithMaxGranulesPerPart(maxGranules),
-		),
+	tbl, err := d.CreateTable(ctx, NewTableDef(
+		name,
+		[]*shedpb.Column{
+			{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
+		},
+		[]*shedpb.SortDef{
+			{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+			{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+		},
+		WithGranuleSize(granuleSize),
+		WithMaxGranulesPerPart(maxGranules),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
+	return tbl
 }
 
 func mkStrings(prefix string, n int) []string {

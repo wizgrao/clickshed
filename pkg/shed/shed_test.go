@@ -4,10 +4,12 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	shedpb "github.com/wizgrao/clickshed/pkg/gen/shed/v1"
 	"gocloud.dev/blob"
 	_ "gocloud.dev/blob/fileblob"
+	_ "gocloud.dev/blob/gcsblob"
 	_ "gocloud.dev/blob/memblob"
 )
 
@@ -18,22 +20,23 @@ func TestReadWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	ts := time.Now().Format(time.RFC3339)
 	d := &Database{
-		bucket:         b,
+		bucket:         blob.PrefixedBucket(b, ts+"/"),
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
-	table := &Table{
-		d: d,
-		Def: NewTableDef(
-			"ReadWriteTest",
-			[]*shedpb.Column{
-				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
-				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
-			},
-			[]*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
-			WithGranuleSize(2),
-		),
+	table, err := d.CreateTable(ctx, NewTableDef(
+		"ReadWriteTest",
+		[]*shedpb.Column{
+			&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
+			&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
+		},
+		[]*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+		WithGranuleSize(2),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	keys := []string{
@@ -173,17 +176,17 @@ func TestMerge(t *testing.T) {
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
-	table := &Table{
-		d: d,
-		Def: NewTableDef(
-			"mergeTest",
-			[]*shedpb.Column{
-				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
-				&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
-			},
-			[]*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
-			WithGranuleSize(2),
-		),
+	table, err := d.CreateTable(ctx, NewTableDef(
+		"mergeTest",
+		[]*shedpb.Column{
+			&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_STRING, Name: "key"},
+			&shedpb.Column{ColType: shedpb.ColType_COL_TYPE_FLOAT, Name: "val"},
+		},
+		[]*shedpb.SortDef{&shedpb.SortDef{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+		WithGranuleSize(2),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
 	keys1 := []string{
 		"asdf",
@@ -368,21 +371,21 @@ func TestMultiColumnIndex(t *testing.T) {
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
-	table := &Table{
-		d: d,
-		Def: NewTableDef(
-			"MultiColumnIndexTest",
-			[]*shedpb.Column{
-				{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
-			},
-			[]*shedpb.SortDef{
-				{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-				{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-			},
-			WithGranuleSize(2),
-		),
+	table, err := d.CreateTable(ctx, NewTableDef(
+		"MultiColumnIndexTest",
+		[]*shedpb.Column{
+			{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
+		},
+		[]*shedpb.SortDef{
+			{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+			{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+		},
+		WithGranuleSize(2),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	k1 := []string{"b", "a", "b", "c", "a", "b"}
@@ -459,21 +462,21 @@ func TestMergeMultiColumnIndex(t *testing.T) {
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
-	table := &Table{
-		d: d,
-		Def: NewTableDef(
-			"MultiColumnIndexTest",
-			[]*shedpb.Column{
-				{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
-			},
-			[]*shedpb.SortDef{
-				{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-				{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
-			},
-			WithGranuleSize(2),
-		),
+	table, err := d.CreateTable(ctx, NewTableDef(
+		"MultiColumnIndexTest",
+		[]*shedpb.Column{
+			{Name: "k1", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "k2", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
+		},
+		[]*shedpb.SortDef{
+			{Name: "k1", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+			{Name: "k2", Order: shedpb.SortOrder_SORT_ORDER_ASC},
+		},
+		WithGranuleSize(2),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	k1a := []string{"a", "b", "b", "c"}
@@ -614,17 +617,17 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 		encoderFactory: NewEncoderFactory,
 		decoderFactory: ProtoDecoderFactory,
 	}
-	table := &Table{
-		d: d,
-		Def: NewTableDef(
-			"threePartScanMerge",
-			[]*shedpb.Column{
-				{Name: "key", ColType: shedpb.ColType_COL_TYPE_STRING},
-				{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
-			},
-			[]*shedpb.SortDef{{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
-			WithGranuleSize(2),
-		),
+	table, err := d.CreateTable(ctx, NewTableDef(
+		"threePartScanMerge",
+		[]*shedpb.Column{
+			{Name: "key", ColType: shedpb.ColType_COL_TYPE_STRING},
+			{Name: "val", ColType: shedpb.ColType_COL_TYPE_FLOAT},
+		},
+		[]*shedpb.SortDef{{Name: "key", Order: shedpb.SortOrder_SORT_ORDER_ASC}},
+		WithGranuleSize(2),
+	))
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	// Create three parts with interleaving keys

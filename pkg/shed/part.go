@@ -204,6 +204,11 @@ func (part *Part) ScanColumnsRange(ctx context.Context, minIndex, maxIndex []int
 		numCols := numIndices + numRequested
 
 		var idxReaders []*blob.Reader
+		defer func() {
+			for _, reader := range idxReaders {
+				reader.Close()
+			}
+		}()
 		decoders := make([]iter.Seq2[any, error], numCols)
 
 		for i, o := range part.table.Def.Order {
@@ -285,6 +290,7 @@ func (part *Part) LoadIndex(ctx context.Context) (*shedpb.PartIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
 	}
+	defer f.Close()
 	ret, err := readOne2(part.table.d.decoderFactory(ctx, f, func() any { return new(shedpb.PartIndex) }))
 	if err != nil {
 		return nil, fmt.Errorf("loading index: %w", err)
