@@ -7,22 +7,59 @@ import (
 	"io"
 	"iter"
 	"path"
+	"sync"
+	"time"
 
 	shedpb "github.com/wizgrao/clickshed/pkg/gen/shed/v1"
 	"gocloud.dev/blob"
+	"golang.org/x/sync/errgroup"
 )
 
 type Database struct {
-	encoderFactory EncoderFactory
-	decoderFactory DecoderFactory
-	bucket         *blob.Bucket
+	EncoderFactory EncoderFactory
+	DecoderFactory DecoderFactory
+	Bucket         *blob.Bucket
+
+	sync.RWMutex
+	Cache map[string]*shedpb.PartIndex
+}
+
+func (d *Database) CheckCache(path string) *shedpb.PartIndex {
+	d.RLock()
+	defer d.RUnlock()
+	if d.Cache == nil {
+		return nil
+	}
+	return d.Cache[path]
+}
+func (d *Database) LoadIndex(ctx context.Context, path string) (*shedpb.PartIndex, error) {
+	if val := d.CheckCache(path); val != nil {
+		return val, nil
+	}
+	f, err := d.Bucket.NewReader(ctx, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("loading index: %w", err)
+	}
+	defer f.Close()
+	ret, err := readOne2(d.DecoderFactory(ctx, f, func() any { return new(shedpb.PartIndex) }))
+	if err != nil {
+		return nil, fmt.Errorf("loading index: %w", err)
+	}
+	retVal := ret.(*shedpb.PartIndex)
+	d.Lock()
+	if d.Cache == nil {
+		d.Cache = make(map[string]*shedpb.PartIndex)
+	}
+	d.Cache[path] = retVal
+	d.Unlock()
+	return retVal, nil
 }
 
 var TableAlreadyExists = errors.New("table already exists")
 
 func (d *Database) CreateTable(ctx context.Context, td *shedpb.TableDef) (*Table, error) {
 	specPath := path.Join("table", td.Name, "spec")
-	exists, err := d.bucket.Exists(ctx, specPath)
+	exists, err := d.Bucket.Exists(ctx, specPath)
 	if err != nil {
 		return nil, fmt.Errorf("creating table: %w", err)
 	}
@@ -31,13 +68,13 @@ func (d *Database) CreateTable(ctx context.Context, td *shedpb.TableDef) (*Table
 		return nil, TableAlreadyExists
 	}
 
-	writer, err := d.bucket.NewWriter(ctx, specPath, nil)
+	writer, err := d.Bucket.NewWriter(ctx, specPath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("creating table: %w", err)
 	}
 	defer writer.Close()
 
-	encoder := d.encoderFactory(ctx, writer)
+	encoder := d.EncoderFactory(ctx, writer)
 	if err := encoder.Encode(td); err != nil {
 		return nil, fmt.Errorf("creating table: %w", err)
 	}
@@ -50,14 +87,44 @@ func (d *Database) CreateTable(ctx context.Context, td *shedpb.TableDef) (*Table
 	}, nil
 }
 
+func (d *Database) MergeLoop(ctx context.Context) error {
+	hasLoop := make(map[string]bool)
+	errGroup, ctx := errgroup.WithContext(ctx)
+	errGroup.Go(func() error {
+		for {
+			tables, err := d.ListTables(ctx)
+			if err != nil {
+				return err
+			}
+			for _, table := range tables {
+				if hasLoop[table.Def.GetName()] {
+					continue
+				}
+				hasLoop[table.Def.GetName()] = true
+				errGroup.Go(func() error {
+					return table.MergeLoop(ctx)
+				})
+			}
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	})
+	return errGroup.Wait()
+
+}
+
 func (d *Database) OpenTable(ctx context.Context, tableName string) (*Table, error) {
 	specPath := path.Join("table", tableName, "spec")
-	r, err := d.bucket.NewReader(ctx, specPath, nil)
+	r, err := d.Bucket.NewReader(ctx, specPath, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open table %s: %w", tableName, err)
 	}
 	defer r.Close()
-	msg, err := readOne2(d.decoderFactory(ctx, r, func() any { return new(shedpb.TableDef) }))
+	msg, err := readOne2(d.DecoderFactory(ctx, r, func() any { return new(shedpb.TableDef) }))
 	if err != nil {
 		return nil, fmt.Errorf("open table %s: %w", tableName, err)
 	}
@@ -66,7 +133,7 @@ func (d *Database) OpenTable(ctx context.Context, tableName string) (*Table, err
 
 func (d *Database) ListTables(ctx context.Context) ([]*Table, error) {
 	var tables []*Table
-	iter := d.bucket.List(&blob.ListOptions{Prefix: path.Join("table")})
+	iter := d.Bucket.List(&blob.ListOptions{Prefix: path.Join("table")})
 	for {
 		obj, err := iter.Next(ctx)
 		if errors.Is(err, io.EOF) {
@@ -96,7 +163,7 @@ func (table *Table) WritePartColumn(ctx context.Context, w io.Writer, elements i
 			}
 		}
 	}()
-	encoder := d.encoderFactory(ctx, w)
+	encoder := d.EncoderFactory(ctx, w)
 	var indexEntries []int64
 	var bytesWritten int64
 	var i int64

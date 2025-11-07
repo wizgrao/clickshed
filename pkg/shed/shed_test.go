@@ -22,9 +22,9 @@ func TestReadWrite(t *testing.T) {
 	}
 	ts := time.Now().Format(time.RFC3339)
 	d := &Database{
-		bucket:         blob.PrefixedBucket(b, ts+"/"),
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         blob.PrefixedBucket(b, ts+"/"),
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 	table, err := d.CreateTable(ctx, NewTableDef(
 		"ReadWriteTest",
@@ -172,9 +172,9 @@ func TestMerge(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 	table, err := d.CreateTable(ctx, NewTableDef(
 		"mergeTest",
@@ -367,9 +367,9 @@ func TestMultiColumnIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 	table, err := d.CreateTable(ctx, NewTableDef(
 		"MultiColumnIndexTest",
@@ -458,9 +458,9 @@ func TestMergeMultiColumnIndex(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 	table, err := d.CreateTable(ctx, NewTableDef(
 		"MultiColumnIndexTest",
@@ -613,9 +613,9 @@ func TestTableScanColumnsRangeThreeParts(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 	table, err := d.CreateTable(ctx, NewTableDef(
 		"threePartScanMerge",
@@ -712,9 +712,9 @@ func TestOpenTable(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 
 	def := NewTableDef(
@@ -750,9 +750,9 @@ func TestListTables(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 
 	// Create out of order to verify sorted output

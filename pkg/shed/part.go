@@ -92,7 +92,7 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 
 	offsets := make(map[string]*shedpb.Offsets)
 	for k, v := range partData.Rows {
-		file, err := d.bucket.NewWriter(ctx, part.GetPartColumnPath(k), nil)
+		file, err := d.Bucket.NewWriter(ctx, part.GetPartColumnPath(k), nil)
 		if err != nil {
 			return fmt.Errorf("writing part %s: %w", k, err)
 		}
@@ -105,7 +105,7 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	}
 
 	index.Offsets = offsets
-	indexFile, err := d.bucket.NewWriter(ctx, part.GetPartIndexPath(), nil)
+	indexFile, err := d.Bucket.NewWriter(ctx, part.GetPartIndexPath(), nil)
 	defer func() {
 		if err := indexFile.Close(); err != nil {
 			outErr = errors.Join(err)
@@ -114,7 +114,7 @@ func (part *Part) WritePart(ctx context.Context, partData *PartData) (outErr err
 	if err != nil {
 		return fmt.Errorf("writing part: %w", err)
 	}
-	encoder := d.encoderFactory(ctx, indexFile)
+	encoder := d.EncoderFactory(ctx, indexFile)
 	if err := encoder.Encode(index); err != nil {
 		return fmt.Errorf("writing part: %w", err)
 	}
@@ -165,13 +165,13 @@ func (part *Part) ScanColumnRange(ctx context.Context, column string, minIndex, 
 
 func (part *Part) ScanColumn(ctx context.Context, column string, offset int64, l int64) iter.Seq2[any, error] {
 	return func(yield func(any, error) bool) {
-		f, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, l, nil)
+		f, err := part.table.d.Bucket.NewRangeReader(ctx, part.GetPartColumnPath(column), offset, l, nil)
 		defer f.Close()
 		if err != nil {
 			yield(nil, err)
 			return
 		}
-		for r, e := range part.table.d.decoderFactory(ctx, f, func() interface{} { return nil }) {
+		for r, e := range part.table.d.DecoderFactory(ctx, f, func() interface{} { return nil }) {
 			if !yield(r, e) {
 				return
 			}
@@ -212,24 +212,24 @@ func (part *Part) ScanColumnsRange(ctx context.Context, minIndex, maxIndex []int
 		decoders := make([]iter.Seq2[any, error], numCols)
 
 		for i, o := range part.table.Def.Order {
-			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o.Name), index.GetOffsets()[o.Name].GetOffsets()[offsetIdx], -1, nil)
+			reader, err := part.table.d.Bucket.NewRangeReader(ctx, part.GetPartColumnPath(o.Name), index.GetOffsets()[o.Name].GetOffsets()[offsetIdx], -1, nil)
 			if err != nil {
 				yield(nil, err)
 				return
 			}
 			idxReaders = append(idxReaders, reader)
-			decoders[i] = part.table.d.decoderFactory(ctx, reader, func() any { return nil })
+			decoders[i] = part.table.d.DecoderFactory(ctx, reader, func() any { return nil })
 
 		}
 
 		for i, o := range columns {
-			reader, err := part.table.d.bucket.NewRangeReader(ctx, part.GetPartColumnPath(o), index.GetOffsets()[o].GetOffsets()[offsetIdx], -1, nil)
+			reader, err := part.table.d.Bucket.NewRangeReader(ctx, part.GetPartColumnPath(o), index.GetOffsets()[o].GetOffsets()[offsetIdx], -1, nil)
 			if err != nil {
 				yield(nil, err)
 				return
 			}
 			idxReaders = append(idxReaders, reader)
-			decoders[i+numIndices] = part.table.d.decoderFactory(ctx, reader, func() any { return nil })
+			decoders[i+numIndices] = part.table.d.DecoderFactory(ctx, reader, func() any { return nil })
 
 		}
 
@@ -286,15 +286,10 @@ func (part *Part) LoadIndex(ctx context.Context) (*shedpb.PartIndex, error) {
 	if part.cachedIndex != nil {
 		return part.cachedIndex, nil
 	}
-	f, err := part.table.d.bucket.NewReader(ctx, part.GetPartIndexPath(), nil)
+	val, err := part.table.d.LoadIndex(ctx, part.GetPartIndexPath())
 	if err != nil {
-		return nil, fmt.Errorf("loading index: %w", err)
+		return nil, err
 	}
-	defer f.Close()
-	ret, err := readOne2(part.table.d.decoderFactory(ctx, f, func() any { return new(shedpb.PartIndex) }))
-	if err != nil {
-		return nil, fmt.Errorf("loading index: %w", err)
-	}
-	part.cachedIndex = ret.(*shedpb.PartIndex)
-	return ret.(*shedpb.PartIndex), nil
+	part.cachedIndex = val
+	return val, nil
 }

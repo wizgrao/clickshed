@@ -15,9 +15,9 @@ func newTestTable(ctx context.Context, t *testing.T, name string, granuleSize, m
 		t.Fatal(err)
 	}
 	d := &Database{
-		bucket:         b,
-		encoderFactory: NewEncoderFactory,
-		decoderFactory: ProtoDecoderFactory,
+		Bucket:         b,
+		EncoderFactory: NewEncoderFactory,
+		DecoderFactory: ProtoDecoderFactory,
 	}
 	tbl, err := d.CreateTable(ctx, NewTableDef(
 		name,

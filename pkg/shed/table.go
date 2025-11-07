@@ -59,7 +59,26 @@ func (t *Table) NewPartData(rows map[string]*shedpb.DatabaseValues) *PartData {
 	}
 }
 
+func (t *Table) MergeLoop(ctx context.Context) error {
+	for {
+		merged, err := t.TryMergeParts(ctx)
+		if err != nil {
+			return fmt.Errorf("merge loop: %w", err)
+		}
+		if merged {
+			continue
+		}
+		timer := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (t *Table) TryMergeParts(ctx context.Context) (bool, error) {
+	fmt.Println("getting active parts")
 	parts, err := t.GetActiveParts(ctx)
 	if err != nil {
 		return false, fmt.Errorf("try merge parts: %w", err)
@@ -68,6 +87,7 @@ func (t *Table) TryMergeParts(ctx context.Context) (bool, error) {
 	if len(parts) < 2 {
 		return false, nil
 	}
+	fmt.Println("sorting")
 
 	slices.SortFunc(parts, func(a, b *Part) int {
 		a.Lock()
@@ -88,14 +108,16 @@ func (t *Table) TryMergeParts(ctx context.Context) (bool, error) {
 	bI := b.cachedIndex
 	b.Unlock()
 
-	if lenDbVals(aI.Keys[0])+lenDbVals(bI.Keys[1]) > int(t.Def.GetMaxGranulesPerPart()) {
+	if lenDbVals(aI.Keys[0])+lenDbVals(bI.Keys[0]) > int(t.Def.GetMaxGranulesPerPart()) {
 		return false, nil
 	}
+	fmt.Println("merging")
 
 	_, err = t.MergeParts(ctx, a, b)
 	if err != nil {
 		return false, fmt.Errorf("try merge parts: %w", err)
 	}
+	fmt.Println("finished iter")
 	return true, nil
 }
 
@@ -177,7 +199,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 		colChannels = append(colChannels, c)
 		eg.Go(
 			func() error {
-				file, err := t.d.bucket.NewWriter(ctxGroup, p.GetPartColumnPath(col.Name), nil)
+				file, err := t.d.Bucket.NewWriter(ctxGroup, p.GetPartColumnPath(col.Name), nil)
 				defer file.Close()
 				if err != nil {
 					return fmt.Errorf("writing part %s: %w", col.Name, err)
@@ -239,7 +261,6 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 				colChannels[i] <- v
 			}
 			if ctr%int(t.Def.GranuleSize) == 0 {
-				fmt.Println("")
 				appendKeyRow(pi, valB)
 			}
 			valB, errB, okB = pullIdxIterB()
@@ -266,7 +287,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 	if err := eg.Wait(); err != nil {
 		return nil, err
 	}
-	indexFile, err := t.d.bucket.NewWriter(ctx, p.GetPartIndexPath(), nil)
+	indexFile, err := t.d.Bucket.NewWriter(ctx, p.GetPartIndexPath(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("writing part: %w", err)
 	}
@@ -275,7 +296,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 			outErr = errors.Join(err)
 		}
 	}()
-	encoder := t.d.encoderFactory(ctx, indexFile)
+	encoder := t.d.EncoderFactory(ctx, indexFile)
 	err = encoder.Encode(pi)
 	if err != nil {
 		return nil, fmt.Errorf("writing part: %w", err)
@@ -288,7 +309,7 @@ func (t *Table) MergeParts(ctx context.Context, a, b *Part) (p *Part, outErr err
 
 func (table *Table) GetActiveParts(ctx context.Context) ([]*Part, error) {
 	partsMap := make(map[string]*Part)
-	listIter := table.d.bucket.List(&blob.ListOptions{
+	listIter := table.d.Bucket.List(&blob.ListOptions{
 		Prefix: path.Join("index", table.Def.GetName()),
 	})
 	iterBlob, err := listIter.Next(ctx)
